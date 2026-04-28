@@ -1,5 +1,3 @@
-## TODO: data ingestion and preprocessing code for the Market Lens project
-
 """
 data.py
 -------
@@ -25,7 +23,6 @@ import pandas as pd
 import numpy as np
 import ta
 from ta.utils import dropna
-from config import TICKER_SECTORS, TICKERS, SECTORS, TRAIN_START, TRAIN_END
 
 # ---------------------------------------------------------------------------
 # Ticker universe — mirrors config.py (imported here for standalone use too)
@@ -259,6 +256,14 @@ def clean_and_normalize(df: pd.DataFrame) -> pd.DataFrame:
     # Clip extreme log returns
     ret_std = df["target"].std()
     df["target"] = df["target"].clip(-5 * ret_std, 5 * ret_std)
+
+    # Replace any inf/-inf with NaN then forward fill (catches OBV blow-ups etc.)
+    numeric_cols = df.select_dtypes(include="number").columns
+    df[numeric_cols] = df[numeric_cols].replace([float("inf"), float("-inf")], float("nan"))
+    df[numeric_cols] = df.groupby("ticker")[numeric_cols].transform(lambda x: x.ffill().bfill())
+
+    # Final drop of any remaining nulls
+    df = df.dropna()
 
     df = df.sort_values(["ticker", "time_idx"]).reset_index(drop=True)
     print(f"  After cleaning: {len(df)} rows, {df['ticker'].nunique()} tickers.")
