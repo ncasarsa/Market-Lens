@@ -25,6 +25,7 @@ import pandas as pd
 import numpy as np
 import ta
 from ta.utils import dropna
+from config import TICKER_SECTORS, TICKERS, SECTORS, TRAIN_START, TRAIN_END
 
 # ---------------------------------------------------------------------------
 # Ticker universe — mirrors config.py (imported here for standalone use too)

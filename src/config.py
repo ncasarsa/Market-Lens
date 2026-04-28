@@ -1,1 +1,0 @@
-## TODO: Configuration parameters for the Market Lens project
