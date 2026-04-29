@@ -144,7 +144,7 @@ REGIME = dict(
 TRAIN = dict(
     batch_size          = 128,
     max_epochs          = 50,
-    early_stopping_patience = 5,
+    early_stopping_patience = 15,
     num_workers         = 0,         # set >0 on Linux/Colab, keep 0 on Windows
 )
 
