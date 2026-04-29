@@ -1,5 +1,3 @@
-## TODO: Model architecture and training code for the Market Lens project
-
 """
 model.py
 --------
@@ -23,7 +21,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from pytorch_forecasting import TemporalFusionTransformer, TimeSeriesDataSet
-from pytorch_forecasting.metrics import MAE, QuantileLoss
+from pytorch_forecasting.metrics import MAE, RMSE, MAPE, SMAPE, QuantileLoss
 from pytorch_forecasting.data import GroupNormalizer
 
 import sys
@@ -87,6 +85,7 @@ def build_timeseries_dataset(
         target                          = TARGET_COL,
         group_ids                       = [GROUP_COL],
         max_encoder_length              = max_encoder_length,
+        min_encoder_length              = max_encoder_length,  # fix histogram OOB error
         max_prediction_length           = max_prediction_length,
         static_categoricals             = STATIC_CATEGORICALS,
         static_reals                    = STATIC_REALS,
@@ -106,7 +105,7 @@ def build_timeseries_dataset(
     val_dataset = TimeSeriesDataSet.from_dataset(
         train_dataset,
         df[df[TIME_COL] >= cutoff_idx],
-        predict=True,
+        predict=False,
         stop_randomization=True,
     )
 
@@ -118,24 +117,31 @@ def build_timeseries_dataset(
 # ---------------------------------------------------------------------------
 # 2. TFT builder
 # ---------------------------------------------------------------------------
+class MarketTFT(TemporalFusionTransformer):
+    """Disables PF's broken interpretation logging during validation."""
+    def _log_interpretation(self, out):
+        return {}
+
+    def log_interpretation(self, outputs):
+        pass
 
 def build_tft(
     train_dataset: TimeSeriesDataSet,
     cfg: dict = None,
-) -> TemporalFusionTransformer:
+) -> MarketTFT:
     """
-    Instantiates a TemporalFusionTransformer from a TimeSeriesDataSet.
+    Instantiates a MarketTFT from a TimeSeriesDataSet.
 
     Args:
         train_dataset:  TimeSeriesDataSet (used to infer embedding sizes etc.)
         cfg:            hyperparameter dict (defaults to config.TFT)
 
     Returns:
-        TemporalFusionTransformer (not yet trained)
+        MarketTFT (not yet trained)
     """
     cfg = cfg or TFT_CFG
 
-    model = TemporalFusionTransformer.from_dataset(
+    model = MarketTFT.from_dataset(
         train_dataset,
         learning_rate           = cfg["learning_rate"],
         hidden_size             = cfg["hidden_size"],
@@ -144,7 +150,7 @@ def build_tft(
         hidden_continuous_size  = cfg["hidden_size"] // 2,
         lstm_layers             = cfg["lstm_layers"],
         loss                    = QuantileLoss(),          # probabilistic output
-        logging_metrics         = nn.ModuleList([MAE()]),
+        logging_metrics         = nn.ModuleList([MAE(), RMSE(), MAPE(), SMAPE()]),
         reduce_on_plateau_patience = 3,
         log_interval            = 10,
     )
