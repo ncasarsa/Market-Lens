@@ -25,3 +25,26 @@ Streamlit dashboard on Hugging Face Spaces.
 ---
 
 ## Project Structure
+
+Market-Lens/
+├── src/
+│   ├── data.py              ✅ done
+│   ├── model.py             ✅ done
+│   ├── trainer.py           ✅ done
+│   ├── explainability.py    ✅ done
+│   ├── regime.py            ❌ not started
+│   └── finbert.py           ❌ not started
+├── app.py                   ❌ not started
+├── sweep.py                 ❌ not started
+├── config.py                ✅ done
+├── data/
+│   └── dataset.parquet      ✅ generated in Colab
+├── models/
+│   ├── tft_best.ckpt        ✅ generated in Colab
+│   └── regime_ae_best.ckpt  ✅ generated in Colab
+├── logs/                    ✅ auto-created
+├── notebooks/
+│   └── MarketLens_Training.ipynb  ✅ done
+├── requirements.txt         ❌ not started
+├── .gitignore               ✅ done
+└── README.md                ✅ done
