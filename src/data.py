@@ -227,6 +227,120 @@ def add_time_idx(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# 4b. Known future covariates: FOMC dates + earnings calendar
+# ---------------------------------------------------------------------------
+
+# FOMC meeting dates 2018-2024 (actual decision days, sourced from federalreserve.gov)
+FOMC_DATES = pd.to_datetime([
+    "2018-01-31","2018-03-21","2018-05-02","2018-06-13",
+    "2018-08-01","2018-09-26","2018-11-08","2018-12-19",
+    "2019-01-30","2019-03-20","2019-05-01","2019-06-19",
+    "2019-07-31","2019-09-18","2019-10-30","2019-12-11",
+    "2020-01-29","2020-03-03","2020-03-15","2020-04-29",
+    "2020-06-10","2020-07-29","2020-09-16","2020-11-05",
+    "2020-12-16","2021-01-27","2021-03-17","2021-04-28",
+    "2021-06-16","2021-07-28","2021-09-22","2021-11-03",
+    "2021-12-15","2022-01-26","2022-03-16","2022-05-04",
+    "2022-06-15","2022-07-27","2022-09-21","2022-11-02",
+    "2022-12-14","2023-02-01","2023-03-22","2023-05-03",
+    "2023-06-14","2023-07-26","2023-09-20","2023-11-01",
+    "2023-12-13","2024-01-31","2024-03-20","2024-05-01",
+    "2024-06-12","2024-07-31","2024-09-18","2024-11-07",
+    "2024-12-18",
+])
+
+def add_known_future_covariates(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Adds time-varying known future covariates to the DataFrame:
+      - days_to_fomc     : trading days until next FOMC decision (capped at 30)
+      - days_to_earnings : trading days until next earnings release for that ticker (capped at 30)
+      - is_earnings_week : 1 if within 2 trading days of an earnings release, else 0
+
+    These go into TIME_VARYING_KNOWN_REALS because the dates are publicly
+    known in advance — the TFT can see them in the decoder window.
+
+    Earnings dates are fetched from yfinance. If a ticker fails, its
+    days_to_earnings and is_earnings_week columns default to 30 and 0.
+    """
+    print("Adding known future covariates (FOMC + earnings)...")
+    df = df.copy()
+    all_dates = sorted(df["date"].unique())
+    all_dates_series = pd.Series(all_dates)
+
+    # ── FOMC countdown (same for all tickers, computed once) ────────────────
+    def days_to_next_fomc(date):
+        future = FOMC_DATES[FOMC_DATES >= date]
+        if len(future) == 0:
+            return 30  # past last known date — cap at 30
+        # Count trading days, not calendar days
+        trading_days = all_dates_series[all_dates_series >= date]
+        next_fomc = future.iloc[0]
+        n = (trading_days <= next_fomc).sum() - 1  # -1 so meeting day = 0
+        return int(min(n, 30))
+
+    date_to_fomc = {d: days_to_next_fomc(d) for d in all_dates}
+    df["days_to_fomc"] = df["date"].map(date_to_fomc).astype(float)
+
+    # ── Earnings countdown (per ticker) ─────────────────────────────────────
+    earnings_lookup: dict[str, pd.DatetimeIndex] = {}
+
+    for ticker in df["ticker"].unique():
+        try:
+            cal = yf.Ticker(ticker).get_earnings_dates(limit=40)
+            if cal is None or cal.empty:
+                raise ValueError("empty")
+            edates = pd.to_datetime(cal.index).normalize().sort_values()
+            # Keep only dates within our training window
+            edates = edates[
+                (edates >= df["date"].min()) & (edates <= df["date"].max())
+            ]
+            earnings_lookup[ticker] = edates
+        except Exception:
+            earnings_lookup[ticker] = pd.DatetimeIndex([])
+
+    rows_by_ticker = df.groupby("ticker")
+
+    result_frames = []
+    for ticker, group in rows_by_ticker:
+        group = group.copy().sort_values("date")
+        edates = earnings_lookup.get(ticker, pd.DatetimeIndex([]))
+        ticker_dates = group["date"].values
+
+        dtе_arr = []
+        iew_arr = []
+
+        for date in ticker_dates:
+            if len(edates) == 0:
+                dtе_arr.append(30.0)
+                iew_arr.append(0.0)
+                continue
+
+            future_e = edates[edates >= date]
+            if len(future_e) == 0:
+                dtе_arr.append(30.0)
+            else:
+                next_e = future_e[0]
+                td = all_dates_series[all_dates_series >= date]
+                n = int((td <= next_e).sum()) - 1
+                dtе_arr.append(float(min(n, 30)))
+
+            # is_earnings_week: within 2 trading days in either direction
+            near = edates[
+                (edates >= date - pd.Timedelta(days=4)) &
+                (edates <= date + pd.Timedelta(days=4))
+            ]
+            iew_arr.append(1.0 if len(near) > 0 else 0.0)
+
+        group["days_to_earnings"] = dtе_arr
+        group["is_earnings_week"] = iew_arr
+        result_frames.append(group)
+
+    df = pd.concat(result_frames).sort_values(["ticker", "date"]).reset_index(drop=True)
+    print(f"  FOMC range: {df['days_to_fomc'].min():.0f}–{df['days_to_fomc'].max():.0f} days")
+    print(f"  Earnings week rows: {df['is_earnings_week'].sum():.0f} / {len(df)}")
+    return df
+
+# ---------------------------------------------------------------------------
 # 5. Normalize / clean
 # ---------------------------------------------------------------------------
 
@@ -243,9 +357,10 @@ def clean_and_normalize(df: pd.DataFrame) -> pd.DataFrame:
 
     # Forward fill indicator NaNs (from warm-up windows like EMA-50)
     indicator_cols = [c for c in df.columns if c not in
-                      ["date", "ticker", "sector", "time_idx",
-                       "open", "high", "low", "close", "volume",
-                       "log_return", "target"]]
+                  ["date", "ticker", "sector", "time_idx",
+                   "open", "high", "low", "close", "volume",
+                   "log_return", "target",
+                   "days_to_fomc", "days_to_earnings", "is_earnings_week"]]
     df[indicator_cols] = df.groupby("ticker")[indicator_cols].transform(
         lambda x: x.ffill()
     )
@@ -300,6 +415,7 @@ def build_dataset(
     df = add_technical_indicators(df)
     df = add_target(df)
     df = add_time_idx(df)
+    df = add_known_future_covariates(df)
     df = clean_and_normalize(df)
 
     if save_path:

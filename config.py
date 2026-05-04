@@ -94,7 +94,7 @@ INDICATOR_COLS = [
 OHLCV_COLS = ["open", "high", "low", "close", "volume"]
 
 # All continuous features passed as observed inputs to TFT
-TIME_VARYING_KNOWN_REALS     = []          # e.g. FOMC dates -- added later
+TIME_VARYING_KNOWN_REALS     = ["days_to_fomc", "days_to_earnings", "is_earnings_week"]          # e.g. FOMC dates -- added later
 TIME_VARYING_UNKNOWN_REALS   = OHLCV_COLS + INDICATOR_COLS
 
 # Static features (don't change over time for a given ticker)
