@@ -5,6 +5,10 @@ config.py
 ---------
 Single source of truth for all hyperparameters, paths, and constants.
 Import this everywhere instead of hardcoding values.
+
+DEV NOTE (small dataset branch):
+  Ticker universe is reduced to 15 tickers (3 per sector) for fast iteration.
+  Restore the full 50-ticker TICKER_SECTORS dict before merging to main.
 """
 
 from pathlib import Path
@@ -27,32 +31,23 @@ CHECKPOINT_PATH = MODEL_DIR / "tft_best.ckpt"
 
 
 # ---------------------------------------------------------------------------
-# Ticker universe
+# Ticker universe  (SMALL DATASET — 15 tickers, 3 per sector)
 # ---------------------------------------------------------------------------
+# Full 50-ticker universe lives on main. This branch uses the 3 highest-
+# liquidity / most data-complete names per sector for fast dev iteration.
+# Swap back to the full dict before merging.
 
 TICKER_SECTORS = {
-    # Tech
-    "AAPL": "tech", "MSFT": "tech", "NVDA": "tech", "GOOGL": "tech",
-    "META": "tech", "AMD": "tech", "INTC": "tech", "AVGO": "tech",
-    "ORCL": "tech", "CRM": "tech",
-    # Energy
-    "XOM": "energy", "CVX": "energy", "COP": "energy", "SLB": "energy",
-    "EOG": "energy", "MPC": "energy", "PSX": "energy", "VLO": "energy",
-    "OXY": "energy", "HAL": "energy",
-    # Financials
-    "JPM": "financials", "BAC": "financials", "WFC": "financials",
-    "GS": "financials", "MS": "financials", "C": "financials",
-    "BLK": "financials", "SCHW": "financials", "AXP": "financials",
-    "COF": "financials",
-    # Defense
-    "LMT": "defense", "RTX": "defense", "NOC": "defense", "GD": "defense",
-    "BA": "defense", "HII": "defense", "TDG": "defense",
-    "HEI": "defense", "LDOS": "defense",
-    # Utilities
+    # Tech — mega-cap + semiconductor
+    "AAPL": "tech", "MSFT": "tech", "NVDA": "tech",
+    # Energy — integrated + services
+    "XOM": "energy", "CVX": "energy", "SLB": "energy",
+    # Financials — money-center banks + asset mgmt
+    "JPM": "financials", "GS": "financials", "BLK": "financials",
+    # Defense — top 3 primes
+    "LMT": "defense", "RTX": "defense", "NOC": "defense",
+    # Utilities — highest liquidity
     "NEE": "utilities", "DUK": "utilities", "SO": "utilities",
-    "D": "utilities", "AEP": "utilities", "EXC": "utilities",
-    "SRE": "utilities", "PCG": "utilities", "ES": "utilities",
-    "ETR": "utilities",
 }
 
 TICKERS  = list(TICKER_SECTORS.keys())
@@ -93,7 +88,9 @@ INDICATOR_COLS = [
 
 OHLCV_COLS = ["open", "high", "low", "close", "volume"]
 
-# All continuous features passed as observed inputs to TFT
+# All continuous features passed as observed inputs to TFT.
+# log_return is intentionally excluded: it is a one-step lag of the target,
+# so including it causes direct data leakage into the encoder.
 TIME_VARYING_KNOWN_REALS     = []          # e.g. FOMC dates -- added later
 TIME_VARYING_UNKNOWN_REALS   = OHLCV_COLS + INDICATOR_COLS
 
@@ -155,7 +152,7 @@ TRAIN = dict(
 
 WANDB = dict(
     project        = "marketlens",
-    entity         = "bucknell-university-csci357-2026sp",              # set to your W&B username
+    entity         = "bucknell-university-csci357-2026sp",
     user_name      = "Nathan Casarsa",
     user_initials  = "NC",
     user_id        = "njc013",
