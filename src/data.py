@@ -365,7 +365,9 @@ def clean_and_normalize(df: pd.DataFrame) -> pd.DataFrame:
                    "openx`", "high", "low", "close", "volume",
                    "log_return", "target",
                    "days_to_fomc", "days_to_earnings", "is_earnings_week",
-                   "sentiment_score", "sentiment_volume", "sentiment_rolling_3d"]]
+                   "sentiment_score", "sentiment_volume", "sentiment_rolling_3d",
+                   "return_lag_1", "return_lag_2", "return_lag_3",
+                   "return_lag_5", "return_lag_10"]]
     df[indicator_cols] = df.groupby("ticker")[indicator_cols].transform(
         lambda x: x.ffill()
     )
