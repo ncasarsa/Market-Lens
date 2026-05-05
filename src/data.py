@@ -359,7 +359,7 @@ def clean_and_normalize(df: pd.DataFrame) -> pd.DataFrame:
     # Forward fill indicator NaNs (from warm-up windows like EMA-50)
     indicator_cols = [c for c in df.columns if c not in
                   ["date", "ticker", "sector", "time_idx",
-                   "open", "high", "low", "close", "volume",
+                   "openx`", "high", "low", "close", "volume",
                    "log_return", "target",
                    "days_to_fomc", "days_to_earnings", "is_earnings_week",
                    "sentiment_score", "sentiment_volume", "sentiment_rolling_3d"]]
@@ -396,6 +396,7 @@ def build_dataset(
     start: str = DEFAULT_START,
     end: str = DEFAULT_END,
     save_path: str = None,
+    sentiment_path: str = None,
 ) -> pd.DataFrame:
     """
     Full pipeline: download → indicators → target → time_idx → clean.
@@ -427,7 +428,7 @@ def build_dataset(
             sent_df = pd.read_parquet(sent_path)
         else:
             sent_df = build_sentiment(
-                tickers   = tickers or TICKERS,
+                tickers   = tickers or list(TICKER_SECTORS.keys()),
                 start     = start,
                 end       = end,
                 save_path = str(sent_path),
