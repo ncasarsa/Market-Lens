@@ -110,23 +110,25 @@ def attention_heatmap(
     """
     Plots a heatmap of temporal self-attention weights over the encoder
     window. Rows = prediction samples, Cols = encoder timesteps.
-
-    Args:
-        model:         trained MarketTFT
-        predictions:   output from model.predict(..., mode='raw', return_x=True)
-        feature_names: list of encoder feature names
-        ticker:        ticker label for plot title
-        n_samples:     number of prediction samples to show
-        save_path:     if provided, saves figure to this path
-
-    Returns:
-        matplotlib Figure
     """
-    # attention shape: (N, n_heads, pred_len, encoder_len)
-    attention = predictions.output.attention.detach().cpu()
+    # interpret_output returns attention under the "attention" key.
+    # Shape after extraction: (N, n_heads, pred_len, encoder_len)
+    interpretation = model.interpret_output(
+        predictions.output,
+        reduction=None,   # None keeps per-sample tensors, not collapsed mean
+    )
+
+    attn = interpretation.get("attention")
+    if attn is None:
+        raise ValueError(
+            "interpret_output() returned no 'attention' key. "
+            "Check your pytorch-forecasting version."
+        )
+
+    attn = attn.detach().cpu()  # (N, n_heads, pred_len, encoder_len)
 
     # Average over heads and prediction horizon → (N, encoder_len)
-    attn_avg = attention.mean(dim=(1, 2))[:n_samples]  # (n_samples, encoder_len)
+    attn_avg = attn.mean(dim=(1, 2))[:n_samples]
 
     fig, ax = plt.subplots(figsize=(14, max(4, n_samples // 4)))
     im = ax.imshow(
@@ -138,7 +140,7 @@ def attention_heatmap(
     plt.colorbar(im, ax=ax, label="Attention Weight")
     ax.set_xlabel("Encoder Timestep (0 = oldest, right = most recent)")
     ax.set_ylabel("Prediction Sample")
-    title = f"TFT Temporal Attention Weights"
+    title = "TFT Temporal Attention Weights"
     if ticker:
         title += f" — {ticker}"
     ax.set_title(title)
