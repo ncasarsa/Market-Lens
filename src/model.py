@@ -95,7 +95,7 @@ def build_timeseries_dataset(
                                             groups=[GROUP_COL],
                                             transformation=None,
                                           ),
-        add_relative_time_idx           = True,
+        add_relative_time_idx           = False,
         add_target_scales               = True,
         add_encoder_length              = True,
         allow_missing_timesteps         = True,
