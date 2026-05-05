@@ -74,54 +74,30 @@ _MACRO_RSS = [
 def _fetch_rss_headlines(ticker: str) -> list[dict]:
     headlines = []
 
-    # Primary: yfinance news (more reliable than RSS in Colab)
     try:
-        tk = yf.Ticker(ticker)
+        tk   = yf.Ticker(ticker)
         news = tk.get_news(count=100) or []
         for item in news:
             try:
-                # newer yfinance returns nested content dict
-                content = item.get("content", item)
+                content = item.get("content", {})
                 title   = content.get("title") or item.get("title")
-                pub_raw = (
-                    content.get("pubDate")
-                    or content.get("publishedAt")
-                    or item.get("providerPublishTime")
-                )
+                pub_raw = content.get("pubDate") or item.get("providerPublishTime")
                 if not title or not pub_raw:
                     continue
                 if isinstance(pub_raw, (int, float)):
                     pub = pd.to_datetime(pub_raw, unit="s")
                 else:
                     pub = pd.to_datetime(pub_raw)
-                pub = pub.normalize()
                 if pub.tzinfo is not None:
                     pub = pub.tz_convert(None)
+                pub = pub.normalize()
                 headlines.append({"title": title, "date": pub})
             except Exception:
                 continue
     except Exception:
         pass
 
-    # Fallback: RSS
-    if len(headlines) < 5:
-        try:
-            url  = _YF_RSS.format(ticker=ticker)
-            feed = feedparser.parse(url)
-            for entry in feed.entries:
-                try:
-                    pub = pd.to_datetime(entry.published)
-                    if pub.tzinfo is not None:
-                        pub = pub.tz_convert(None)
-                    pub = pub.normalize()
-                    headlines.append({"title": entry.title, "date": pub})
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
     return headlines
-
 
 def fetch_all_headlines(
     tickers: list[str],
@@ -152,7 +128,7 @@ def fetch_all_headlines(
         df = df.drop_duplicates(subset=["title"])
         frames.append(df)
         print(f"{len(df)} headlines")
-        time.sleep(0.3)   # be polite to Yahoo RSS
+        time.sleep(1)   # be polite to Yahoo RSS
 
     if not frames:
         raise RuntimeError("No headlines fetched for any ticker.")
