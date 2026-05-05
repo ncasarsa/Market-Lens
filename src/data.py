@@ -232,7 +232,7 @@ def add_time_idx(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 # FOMC meeting dates 2018-2024 (actual decision days, sourced from federalreserve.gov)
-FOMC_DATES = pd.to_datetime([
+FOMC_DATES = pd.Series(pd.to_datetime([
     "2018-01-31","2018-03-21","2018-05-02","2018-06-13",
     "2018-08-01","2018-09-26","2018-11-08","2018-12-19",
     "2019-01-30","2019-03-20","2019-05-01","2019-06-19",
@@ -248,7 +248,7 @@ FOMC_DATES = pd.to_datetime([
     "2023-12-13","2024-01-31","2024-03-20","2024-05-01",
     "2024-06-12","2024-07-31","2024-09-18","2024-11-07",
     "2024-12-18",
-])
+]))
 
 def add_known_future_covariates(df: pd.DataFrame) -> pd.DataFrame:
     """
