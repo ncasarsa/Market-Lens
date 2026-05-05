@@ -85,7 +85,7 @@ def _fetch_rss_headlines(ticker: str) -> list[dict]:
         feed = feedparser.parse(url)
         for entry in feed.entries:
             try:
-                pub = pd.to_datetime(entry.published).normalize()
+                pub = pd.to_datetime(entry.published).normalize().tz_localize(None)
                 headlines.append({"title": entry.title, "date": pub})
             except Exception:
                 continue
@@ -98,7 +98,7 @@ def _fetch_rss_headlines(ticker: str) -> list[dict]:
             news = yf.Ticker(ticker).news or []
             for item in news:
                 try:
-                    pub = pd.to_datetime(item["providerPublishTime"], unit="s").normalize()
+                    pub = pd.to_datetime(item["providerPublishTime"], unit="s").normalize().tz_localize(None)
                     headlines.append({"title": item["title"], "date": pub})
                 except Exception:
                     continue
@@ -118,8 +118,8 @@ def fetch_all_headlines(
 
     Columns: ticker, date, title
     """
-    start_dt = pd.to_datetime(start)
-    end_dt   = pd.to_datetime(end)
+    start_dt = pd.to_datetime(start).tz_localize("UTC")
+    end_dt   = pd.to_datetime(end).tz_localize("UTC")
 
     frames = []
     for i, ticker in enumerate(tickers):
