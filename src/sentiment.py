@@ -72,34 +72,49 @@ _MACRO_RSS = [
 
 
 def _fetch_rss_headlines(ticker: str) -> list[dict]:
-    """
-    Fetches headlines from Yahoo Finance RSS for a single ticker.
-    Returns list of dicts with keys: title, published (datetime).
-    Falls back to yfinance .news if RSS returns nothing.
-    """
     headlines = []
 
-    # Primary: RSS feed
+    # Primary: yfinance news (more reliable than RSS in Colab)
     try:
-        url  = _YF_RSS.format(ticker=ticker)
-        feed = feedparser.parse(url)
-        for entry in feed.entries:
+        tk = yf.Ticker(ticker)
+        news = tk.get_news(count=100) or []
+        for item in news:
             try:
-                pub = pd.to_datetime(entry.published).normalize().tz_localize(None)
-                headlines.append({"title": entry.title, "date": pub})
+                # newer yfinance returns nested content dict
+                content = item.get("content", item)
+                title   = content.get("title") or item.get("title")
+                pub_raw = (
+                    content.get("pubDate")
+                    or content.get("publishedAt")
+                    or item.get("providerPublishTime")
+                )
+                if not title or not pub_raw:
+                    continue
+                if isinstance(pub_raw, (int, float)):
+                    pub = pd.to_datetime(pub_raw, unit="s")
+                else:
+                    pub = pd.to_datetime(pub_raw)
+                pub = pub.normalize()
+                if pub.tzinfo is not None:
+                    pub = pub.tz_convert(None)
+                headlines.append({"title": title, "date": pub})
             except Exception:
                 continue
     except Exception:
         pass
 
-    # Fallback: yfinance .news (shorter history but more reliable)
-    if len(headlines) < 10:
+    # Fallback: RSS
+    if len(headlines) < 5:
         try:
-            news = yf.Ticker(ticker).news or []
-            for item in news:
+            url  = _YF_RSS.format(ticker=ticker)
+            feed = feedparser.parse(url)
+            for entry in feed.entries:
                 try:
-                    pub = pd.to_datetime(item["providerPublishTime"], unit="s").normalize().tz_localize(None)
-                    headlines.append({"title": item["title"], "date": pub})
+                    pub = pd.to_datetime(entry.published)
+                    if pub.tzinfo is not None:
+                        pub = pub.tz_convert(None)
+                    pub = pub.normalize()
+                    headlines.append({"title": entry.title, "date": pub})
                 except Exception:
                     continue
         except Exception:
