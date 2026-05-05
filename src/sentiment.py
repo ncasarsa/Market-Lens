@@ -118,8 +118,8 @@ def fetch_all_headlines(
 
     Columns: ticker, date, title
     """
-    start_dt = pd.to_datetime(start).tz_localize("UTC")
-    end_dt   = pd.to_datetime(end).tz_localize("UTC")
+    start_dt = pd.to_datetime(start)
+    end_dt   = pd.to_datetime(end)
 
     frames = []
     for i, ticker in enumerate(tickers):
@@ -231,6 +231,10 @@ def aggregate_daily_sentiment(
     Returns DataFrame with columns:
         ticker, date, sentiment_score, sentiment_volume, sentiment_rolling_3d
     """
+    scored_df = scored_df.copy()
+    scored_df["date"] = pd.to_datetime(scored_df["date"]).apply(
+    lambda x: x.tz_convert(None) if x.tzinfo is not None else x
+    )
     daily = (
         scored_df
         .groupby(["ticker", "date"])
@@ -287,19 +291,6 @@ def build_sentiment(
     end: str   = TRAIN_END,
     save_path: str = None,
 ) -> pd.DataFrame:
-    """
-    Full pipeline: fetch headlines → FinBERT scoring → daily aggregation.
-
-    Args:
-        tickers:   ticker list (defaults to config.TICKERS)
-        start:     start date string "YYYY-MM-DD"
-        end:       end date string "YYYY-MM-DD"
-        save_path: if provided, caches result as parquet
-
-    Returns:
-        DataFrame with columns:
-            ticker, date, sentiment_score, sentiment_volume, sentiment_rolling_3d
-    """
     tickers = tickers or TICKERS
     print(f"\nBuilding sentiment dataset for {len(tickers)} tickers "
           f"({start} → {end})...")
