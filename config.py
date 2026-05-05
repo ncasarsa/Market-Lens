@@ -96,6 +96,11 @@ TIME_VARYING_UNKNOWN_REALS   = OHLCV_COLS + INDICATOR_COLS +  [
     "sentiment_score",
     "sentiment_volume",
     "sentiment_rolling_3d",
+    "return_lag_1",
+    "return_lag_2",
+    "return_lag_3",
+    "return_lag_5",
+    "return_lag_10",
 ]
 
 # Static features (don't change over time for a given ticker)

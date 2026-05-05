@@ -205,6 +205,9 @@ def add_target(df: pd.DataFrame) -> pd.DataFrame:
     df["log_return"] = df.groupby("ticker")["close"].transform(
         lambda x: np.log(x).diff()
     )
+    for lag in [1, 2, 3, 5, 10]:
+        df[f"return_lag_{lag}"] = df.groupby("ticker")["log_return"].shift(lag)
+
     # Shift log_return back by 1 so each row's target = tomorrow's return
     df["target"] = df.groupby("ticker")["log_return"].shift(-1)
     return df
@@ -370,9 +373,13 @@ def clean_and_normalize(df: pd.DataFrame) -> pd.DataFrame:
     # Drop any remaining NaN rows (start of series before any ffill can help)
     df = df.dropna(subset=indicator_cols)
 
-    # Clip extreme log returns
-    ret_std = df["target"].std()
-    df["target"] = df["target"].clip(-5 * ret_std, 5 * ret_std)
+    # Normalize target per ticker using rolling z-score
+    df["target"] = df.groupby("ticker")["target"].transform(
+        lambda x: (x - x.rolling(60, min_periods=10).mean()) /
+                  (x.rolling(60, min_periods=10).std() + 1e-8)
+)
+    # Clip extreme z-scores after normalization
+    df["target"] = df["target"].clip(-5, 5)
 
     # Replace any inf/-inf with NaN then forward fill (catches OBV blow-ups etc.)
     numeric_cols = df.select_dtypes(include="number").columns
