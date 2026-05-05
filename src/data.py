@@ -22,6 +22,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import ta
+import feedparser
 from ta.utils import dropna
 
 # ---------------------------------------------------------------------------
@@ -360,7 +361,8 @@ def clean_and_normalize(df: pd.DataFrame) -> pd.DataFrame:
                   ["date", "ticker", "sector", "time_idx",
                    "open", "high", "low", "close", "volume",
                    "log_return", "target",
-                   "days_to_fomc", "days_to_earnings", "is_earnings_week"]]
+                   "days_to_fomc", "days_to_earnings", "is_earnings_week",
+                   "sentiment_score", "sentiment_volume", "sentiment_rolling_3d"]]
     df[indicator_cols] = df.groupby("ticker")[indicator_cols].transform(
         lambda x: x.ffill()
     )
@@ -416,6 +418,21 @@ def build_dataset(
     df = add_target(df)
     df = add_time_idx(df)
     df = add_known_future_covariates(df)
+    if sentiment_path:
+        from pathlib import Path
+        from sentiment import build_sentiment, add_sentiment
+        sent_path = Path(sentiment_path)
+        if sent_path.exists():
+            print(f"Loading cached sentiment from {sent_path}...")
+            sent_df = pd.read_parquet(sent_path)
+        else:
+            sent_df = build_sentiment(
+                tickers   = tickers or TICKERS,
+                start     = start,
+                end       = end,
+                save_path = str(sent_path),
+            )
+        df = add_sentiment(df, sent_df)
     df = clean_and_normalize(df)
 
     if save_path:
