@@ -117,13 +117,13 @@ TIME_COL                     = "time_idx"  # PF time identifier
 # ---------------------------------------------------------------------------
 
 TFT = dict(
-    max_encoder_length      = 90,    # lookback window: 60 trading days (~3 months)
+    max_encoder_length      = 120,    # lookback window: 60 trading days (~3 months)
     max_prediction_length   = 1,     # predict 1 day ahead
-    hidden_size             = 64,
+    hidden_size             = 48,
     lstm_layers             = 2,
-    dropout                 = 0.2,
-    attention_head_size     = 4,
-    learning_rate           = 3e-4,
+    dropout                 = 0.3,
+    attention_head_size     = 2,
+    learning_rate           = 5e-4,
     gradient_clip_val       = 0.5,
 )
 
