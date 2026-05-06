@@ -85,20 +85,11 @@ def extract_latents(
 # ---------------------------------------------------------------------------
 
 def _label_cluster(mean_ret: float, std_ret: float, vol_threshold: float) -> str:
-    """
-    Assigns a semantic label to a cluster given its return statistics.
-
-    Labeling logic:
-        volatile  — std above the cross-cluster median (high uncertainty)
-        bull      — mean return in top half of non-volatile clusters
-        bear      — mean return in bottom half of non-volatile clusters
-        sideways  — everything else (near-zero drift, low volatility)
-    """
     if std_ret >= vol_threshold:
         return "volatile"
-    if mean_ret > 0.0003:        # roughly +7.5% annualized threshold
+    if mean_ret > 0.30:        # strong positive 5-day return
         return "bull"
-    if mean_ret < -0.0003:       # roughly -7.5% annualized threshold
+    if mean_ret < -0.10:       # negative 5-day return
         return "bear"
     return "sideways"
 
