@@ -493,9 +493,9 @@ def build_dataset(
     df = download_ohlcv(tickers, start, end)
     df = add_vix(df, start, end)
     df = add_technical_indicators(df)
-    df = add_cross_sectional_features(df)
     df = add_target(df)
     df = add_time_idx(df)
+    df = add_cross_sectional_features(df)
     df = add_known_future_covariates(df)
     if sentiment_path:
         from pathlib import Path
