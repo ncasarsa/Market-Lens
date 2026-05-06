@@ -375,11 +375,8 @@ def clean_and_normalize(df: pd.DataFrame) -> pd.DataFrame:
     # Drop any remaining NaN rows (start of series before any ffill can help)
     df = df.dropna(subset=indicator_cols)
 
-    # Normalize target per ticker using rolling z-score
-    df["target"] = df.groupby("ticker")["target"].transform(
-        lambda x: (x - x.rolling(60, min_periods=10).mean()) /
-                  (x.rolling(60, min_periods=10).std() + 1e-8)
-)
+    df["target"] = df["target"] / 0.02   # scale by typical daily vol
+    
     # Clip extreme z-scores after normalization
     df["target"] = df["target"].clip(-5, 5)
 

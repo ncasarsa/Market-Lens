@@ -123,8 +123,8 @@ TFT = dict(
     lstm_layers             = 2,
     dropout                 = 0.2,
     attention_head_size     = 4,
-    learning_rate           = 1e-3,
-    gradient_clip_val       = 0.1,
+    learning_rate           = 3e-4,
+    gradient_clip_val       = 0.5,
 )
 
 
@@ -149,9 +149,9 @@ REGIME = dict(
 
 TRAIN = dict(
     batch_size          = 128,
-    max_epochs          = 50,
-    early_stopping_patience = 15,
-    num_workers         = 0,         # set >0 on Linux/Colab, keep 0 on Windows
+    max_epochs          = 100,
+    early_stopping_patience = 20,
+    num_workers         = 2,         # set >0 on Linux/Colab, keep 0 on Windows
 )
 
 

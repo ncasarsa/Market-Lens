@@ -151,7 +151,7 @@ def build_tft(
         lstm_layers             = cfg["lstm_layers"],
         loss                    = QuantileLoss(),          # probabilistic output
         logging_metrics         = nn.ModuleList([MAE(), RMSE(), MAPE(), SMAPE()]),
-        reduce_on_plateau_patience = 12,
+        reduce_on_plateau_patience = 50,
         log_interval            = 10,
     )
 
