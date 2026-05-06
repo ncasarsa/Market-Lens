@@ -32,8 +32,8 @@ Market-Lens/
 │   ├── model.py             ✅ done
 │   ├── trainer.py           ✅ done
 │   ├── explainability.py    ✅ done
-│   ├── regime.py            ❌ not started
-│   └── finbert.py           ❌ not started
+│   ├── regime.py             Need to fix regime label thersholds
+│   └── sentiment.py          Need fixes to obtain headlines
 ├── app.py                   ❌ not started
 ├── sweep.py                 ❌ not started
 ├── config.py                ✅ done
