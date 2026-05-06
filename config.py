@@ -96,7 +96,7 @@ OHLCV_COLS = ["open", "high", "low", "close", "volume"]
 # All continuous features passed as observed inputs to TFT.
 # log_return is intentionally excluded: it is a one-step lag of the target,
 # so including it causes direct data leakage into the encoder.
-TIME_VARYING_KNOWN_REALS     = ["days_to_fomc", "days_to_earnings", "is_earnings_week", "vix_normalized", "vix_change"]          # e.g. FOMC dates -- added later
+TIME_VARYING_KNOWN_REALS     = ["days_to_fomc", "vix_normalized", "vix_change"]          # e.g. FOMC dates -- added later
 TIME_VARYING_UNKNOWN_REALS   = OHLCV_COLS + INDICATOR_COLS +  [
     "sentiment_score",
     "sentiment_volume",
