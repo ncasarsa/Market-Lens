@@ -144,6 +144,8 @@ def add_vix(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
     return df
 
 def add_cross_sectional_features(df: pd.DataFrame) -> pd.DataFrame:
+    print("log_return present:", "log_return" in df.columns)
+    print("columns:", [c for c in df.columns if 'return' in c.lower() or 'log' in c.lower()])
     """
     Adds cross-sectional relative strength features per trading day.
     These capture how each ticker is performing relative to its sector
