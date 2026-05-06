@@ -287,6 +287,7 @@ def shap_waterfall(
 
     # Average |SHAP| over sequence length → (n_features,)
     shap_mean = np.abs(shap_vals[0]).mean(axis=0)
+    shap_mean = shap_mean.squeze()  # remove extra dim if pred_len=1
     shap_series = (
         pd.Series(shap_mean, index=feature_names[:len(shap_mean)])
         .sort_values(ascending=False)
