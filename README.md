@@ -32,9 +32,9 @@ Market-Lens/
 │   ├── model.py             ✅ done
 │   ├── trainer.py           ✅ done
 │   ├── explainability.py    ✅ done
-│   ├── regime.py            ❌ not started
-│   └── finbert.py           ❌ not started
-├── app.py                   ❌ not started
+│   ├── regime.py            Needs to be tested
+│   └── sentiment.py         Needs fixing to parse through externally built dataset
+├── app.py                   ✅ done
 ├── sweep.py                 ❌ not started
 ├── config.py                ✅ done
 ├── data/
