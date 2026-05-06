@@ -7,23 +7,22 @@ After train_regime_ae() produces a trained RegimeAutoencoder, this module:
     1. Encodes all windows into latent vectors
     2. Fits KMeans on those vectors
     3. Labels each cluster semantically (bull / bear / volatile / sideways)
-       based on mean return and return variance of the windows in each cluster
+       using rank-based assignment — guarantees all 4 labels used exactly once
     4. Merges a "regime" string column back onto the main price DataFrame
 
 Usage:
     from regime import fit_regimes, attach_regime_labels
 
-    # After training
     ae_model, windows, metadata = train_regime_ae(df)
     cluster_map = fit_regimes(ae_model, windows, metadata, df)
-    df = attach_regime_labels(df, ae_model, cluster_map)
+    df = attach_regime_labels(df, cluster_map)
     df.to_parquet("data/dataset_with_regimes.parquet", index=False)
 
 Regime label semantics:
-    bull       high mean return, low variance
-    bear       low (negative) mean return, low variance
-    volatile   high variance regardless of direction
-    sideways   near-zero mean return, low variance
+    volatile   highest std cluster
+    bull       highest mean among remaining 3
+    bear       lowest mean among remaining 3
+    sideways   the leftover cluster
 """
 
 import os
@@ -54,7 +53,7 @@ def extract_latents(
     Runs the RegimeAutoencoder encoder on all windows in batches.
 
     Args:
-        model:      trained RegimeAutoencoder (output of train_regime_ae)
+        model:      trained RegimeAutoencoder
         windows:    (N, seq_len, n_features) float tensor — raw, unnormalized
         batch_size: inference batch size
 
@@ -81,18 +80,55 @@ def extract_latents(
 
 
 # ---------------------------------------------------------------------------
-# 2. Fit KMeans and label clusters semantically
+# 2. Rank-based cluster labeling
 # ---------------------------------------------------------------------------
 
-def _label_cluster(mean_ret: float, std_ret: float, vol_threshold: float) -> str:
-    if std_ret >= vol_threshold:
-        return "volatile"
-    if mean_ret > 0.30:        # strong positive 5-day return
-        return "bull"
-    if mean_ret < -0.10:       # negative 5-day return
-        return "bear"
-    return "sideways"
+def label_clusters_by_rank(cluster_stats: dict) -> dict:
+    """
+    Assigns bull/bear/volatile/sideways by ranking clusters.
+    Guarantees all 4 labels are used exactly once regardless of
+    the return distribution (handles all-positive or all-negative markets).
 
+    Args:
+        cluster_stats: {cluster_id: {"mean": float, "std": float}}
+
+    Returns:
+        cluster_map: {cluster_id: label_string}
+
+    Logic:
+        volatile  = highest std  (most chaotic, pick first to isolate noise)
+        bull      = highest mean among remaining 3
+        bear      = lowest mean among remaining 3
+        sideways  = the one left over
+    """
+    ids = list(cluster_stats.keys())
+    assert len(ids) == 4, f"Expected 4 clusters, got {len(ids)}"
+
+    # Step 1: volatile = highest std
+    volatile_id = max(ids, key=lambda c: cluster_stats[c]["std"])
+    remaining = [c for c in ids if c != volatile_id]
+
+    # Step 2: bull = highest mean of remaining 3
+    bull_id = max(remaining, key=lambda c: cluster_stats[c]["mean"])
+    remaining = [c for c in remaining if c != bull_id]
+
+    # Step 3: bear = lowest mean of remaining 2
+    bear_id = min(remaining, key=lambda c: cluster_stats[c]["mean"])
+
+    # Step 4: sideways = whatever is left
+    sideways_id = [c for c in remaining if c != bear_id][0]
+
+    return {
+        volatile_id: "volatile",
+        bull_id:     "bull",
+        bear_id:     "bear",
+        sideways_id: "sideways",
+    }
+
+
+# ---------------------------------------------------------------------------
+# 3. Fit KMeans and produce cluster_map + saved labels parquet
+# ---------------------------------------------------------------------------
 
 def fit_regimes(
     model,
@@ -104,6 +140,7 @@ def fit_regimes(
 ) -> dict:
     """
     Fits KMeans on the latent space and produces a cluster-to-label map.
+    Also saves a (ticker, date, cluster, regime) parquet for attach_regime_labels.
 
     Args:
         model:      trained RegimeAutoencoder
@@ -114,26 +151,23 @@ def fit_regimes(
         save_path:  if provided, saves regime labels parquet here
 
     Returns:
-        cluster_map: dict mapping cluster int -> regime label string
-                     e.g. {0: "bull", 1: "bear", 2: "volatile", 3: "sideways"}
+        cluster_map: {cluster_int -> regime_label_string}
     """
     n_clusters = n_clusters or REGIME["n_clusters"]
-    seq_len    = REGIME["sequence_length"]
 
     # Step 1: encode
     latents = extract_latents(model, windows)
 
-    # Step 2: scale latents before clustering (KMeans is distance-based)
-    scaler  = StandardScaler()
+    # Step 2: scale latents (KMeans is distance-based)
+    scaler = StandardScaler()
     latents_scaled = scaler.fit_transform(latents)
 
-    # Step 3: fit KMeans
+    # Step 3: fit KMeans — store the fitted object so attach can reuse it
     print(f"Fitting KMeans with {n_clusters} clusters on {len(latents)} windows...")
     kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
     labels = kmeans.fit_predict(latents_scaled)
 
-    # Step 4: compute per-cluster return statistics to assign semantic labels
-    # Build a lookup: (ticker, date) -> target (log return) from df
+    # Step 4: compute per-cluster return stats for semantic labeling
     ret_lookup = (
         df.set_index(["ticker", pd.to_datetime(df["date"])])[TARGET_COL]
         .to_dict()
@@ -141,8 +175,7 @@ def fit_regimes(
 
     cluster_returns = {c: [] for c in range(n_clusters)}
     for i, (ticker, end_date) in enumerate(metadata):
-        end_date_ts = pd.Timestamp(end_date)
-        key = (ticker, end_date_ts)
+        key = (ticker, pd.Timestamp(end_date))
         ret = ret_lookup.get(key, np.nan)
         if not np.isnan(ret):
             cluster_returns[labels[i]].append(ret)
@@ -150,20 +183,13 @@ def fit_regimes(
     cluster_stats = {}
     for c in range(n_clusters):
         rets = cluster_returns[c]
-        if len(rets) == 0:
-            cluster_stats[c] = {"mean": 0.0, "std": 0.0}
-        else:
-            cluster_stats[c] = {
-                "mean": float(np.mean(rets)),
-                "std":  float(np.std(rets)),
-            }
+        cluster_stats[c] = {
+            "mean": float(np.mean(rets)) if rets else 0.0,
+            "std":  float(np.std(rets))  if rets else 0.0,
+        }
 
-    # Volatility threshold = median std across clusters
-    vol_threshold = float(np.median([s["std"] for s in cluster_stats.values()]))
-
-    cluster_map = {}
-    for c, stats in cluster_stats.items():
-        cluster_map[c] = _label_cluster(stats["mean"], stats["std"], vol_threshold)
+    # Step 5: rank-based labeling — always produces 4 distinct labels
+    cluster_map = label_clusters_by_rank(cluster_stats)
 
     print("Cluster assignments:")
     for c, label in cluster_map.items():
@@ -172,16 +198,16 @@ def fit_regimes(
         print(f"  Cluster {c} -> {label:10s}  "
               f"mean_ret={stats['mean']:+.5f}  std={stats['std']:.5f}  n={count}")
 
-    # Step 5: build a (ticker, date, regime) DataFrame and optionally save
-    rows = []
-    for i, (ticker, end_date) in enumerate(metadata):
-        rows.append({
-            "ticker": ticker,
-            "date":   pd.Timestamp(end_date),
+    # Step 6: build and save the labeled parquet
+    rows = [
+        {
+            "ticker":  ticker,
+            "date":    pd.Timestamp(end_date),
             "cluster": int(labels[i]),
             "regime":  cluster_map[int(labels[i])],
-        })
-
+        }
+        for i, (ticker, end_date) in enumerate(metadata)
+    ]
     regime_df = pd.DataFrame(rows)
 
     out_path = save_path or (DATA_DIR / "regime_labels.parquet")
@@ -192,70 +218,42 @@ def fit_regimes(
 
 
 # ---------------------------------------------------------------------------
-# 3. Attach regime labels onto the main DataFrame
+# 4. Attach regime labels onto the main DataFrame
 # ---------------------------------------------------------------------------
 
 def attach_regime_labels(
     df: pd.DataFrame,
-    model,
     cluster_map: dict,
-    windows: torch.Tensor = None,
-    metadata: list = None,
     regime_path: Path = None,
 ) -> pd.DataFrame:
     """
-    Merges a "regime" string column onto the main price DataFrame.
+    Merges the saved regime_labels.parquet onto the main price DataFrame.
 
-    Each row in df gets the regime label of the most recent window
-    whose end_date matches that row's (ticker, date).
-
-    If windows and metadata are provided, re-encodes and re-clusters inline.
-    Otherwise, loads from regime_path (or the default DATA_DIR location).
+    Uses the parquet saved by fit_regimes — does NOT re-run KMeans, so
+    cluster IDs are guaranteed to match cluster_map exactly.
 
     Args:
         df:          cleaned price DataFrame
-        model:       trained RegimeAutoencoder
-        cluster_map: output of fit_regimes
-        windows:     optional — tensor from make_regime_windows
-        metadata:    optional — list from make_regime_windows
-        regime_path: optional — path to saved regime_labels.parquet
+        cluster_map: output of fit_regimes (used only for logging here)
+        regime_path: path to regime_labels.parquet (defaults to DATA_DIR)
 
     Returns:
-        df with a new "regime" column (str).
-        Rows with no matching window are labeled "unknown".
+        df with a new "regime" column. Unmatched rows get "unknown".
     """
-    # Load or build the regime labels DataFrame
-    if windows is not None and metadata is not None:
-        latents = extract_latents(model, windows)
-        scaler  = StandardScaler()
-        latents_scaled = scaler.fit_transform(latents)
-        kmeans = KMeans(n_clusters=len(cluster_map), random_state=42, n_init=10)
-        raw_labels = kmeans.fit_predict(latents_scaled)
+    path = regime_path or (DATA_DIR / "regime_labels.parquet")
+    if not path.exists():
+        raise FileNotFoundError(
+            f"regime_labels.parquet not found at {path}. "
+            "Run fit_regimes() first."
+        )
 
-        rows = [
-            {
-                "ticker": ticker,
-                "date":   pd.Timestamp(end_date),
-                "regime": cluster_map[int(raw_labels[i])],
-            }
-            for i, (ticker, end_date) in enumerate(metadata)
-        ]
-        regime_df = pd.DataFrame(rows)
-    else:
-        path = regime_path or (DATA_DIR / "regime_labels.parquet")
-        if not path.exists():
-            raise FileNotFoundError(
-                f"regime_labels.parquet not found at {path}. "
-                "Run fit_regimes() first or pass windows and metadata."
-            )
-        regime_df = pd.read_parquet(path)[["ticker", "date", "regime"]]
+    regime_df = pd.read_parquet(path)[["ticker", "date", "regime"]]
 
-    # Merge onto main df — left join so all price rows are preserved
     df = df.copy()
-    df["date"] = pd.to_datetime(df["date"])
+    df["date"]        = pd.to_datetime(df["date"])
     regime_df["date"] = pd.to_datetime(regime_df["date"])
 
-    merged = df.merge(regime_df[["ticker", "date", "regime"]], on=["ticker", "date"], how="left")
+    merged = df.merge(regime_df, on=["ticker", "date"], how="left")
     merged["regime"] = merged["regime"].fillna("unknown")
 
     coverage = (merged["regime"] != "unknown").mean()
@@ -288,13 +286,11 @@ if __name__ == "__main__":
     feature_cols = OHLCV_COLS + INDICATOR_COLS
     windows, metadata = make_regime_windows(df, feature_cols)
 
-    # Use an untrained model — labels will be random but pipeline logic is verified
     print("\nRunning regime pipeline with untrained model (sanity check only)...")
     ae_model = RegimeAutoencoder(input_size=len(feature_cols))
 
     cluster_map = fit_regimes(ae_model, windows, metadata, df)
-
-    df_labeled = attach_regime_labels(df, ae_model, cluster_map, windows, metadata)
+    df_labeled  = attach_regime_labels(df, cluster_map)
 
     print(f"\nFinal DataFrame shape: {df_labeled.shape}")
     print(df_labeled[["ticker", "date", "regime"]].head(10).to_string())
