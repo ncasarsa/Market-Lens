@@ -102,10 +102,9 @@ TIME_VARYING_UNKNOWN_REALS   = OHLCV_COLS + INDICATOR_COLS +  [
     "sentiment_volume",
     "sentiment_rolling_3d",
     "return_lag_1",
-    "return_lag_2",
-    "return_lag_3",
     "return_lag_5",
     "return_lag_10",
+    "return_lag_20",
     "sector_rel_return",
     "market_rel_return",
     "sector_rel_20d",
@@ -127,7 +126,7 @@ TIME_COL                     = "time_idx"  # PF time identifier
 
 TFT = dict(
     max_encoder_length      = 60,    # lookback window: 60 trading days (~3 months)
-    max_prediction_length   = 1,     # predict 1 day ahead
+    max_prediction_length   = 1,     # predict one 5 day value
     hidden_size             = 32,
     lstm_layers             = 1,
     dropout                 = 0.2,

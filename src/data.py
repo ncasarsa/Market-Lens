@@ -268,19 +268,20 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_target(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Adds `target` column: next-day log return, computed per ticker.
-    The last row per ticker will have NaN target and should be dropped
-    before training (but kept for live inference).
+    Adds target column: 5-day forward cumulative log return per ticker.
+    More predictable than 1-day returns due to lower noise-to-signal ratio.
     """
     df = df.copy()
     df["log_return"] = df.groupby("ticker")["close"].transform(
         lambda x: np.log(x).diff()
     )
-    for lag in [1, 2, 3, 5, 10]:
-        df[f"return_lag_{lag}"] = df.groupby("ticker")["log_return"].shift(lag)
+    # Sum of next 5 days of log returns = log return over next 5 trading days
+    df["target"] = df.groupby("ticker")["log_return"].transform(
+        lambda x: x.shift(-1).rolling(5).sum().shift(-4)
+    )
 
-    # Shift log_return back by 1 so each row's target = tomorrow's return
-    df["target"] = df.groupby("ticker")["log_return"].shift(-1)
+    for lag in [1, 5, 10, 20]:
+        df[f"return_lag_{lag}"] = df.groupby("ticker")["log_return"].shift(lag)
     return df
 
 
@@ -437,8 +438,8 @@ def clean_and_normalize(df: pd.DataFrame) -> pd.DataFrame:
                    "log_return", "target",
                    "days_to_fomc", "days_to_earnings", "is_earnings_week",
                    "sentiment_score", "sentiment_volume", "sentiment_rolling_3d",
-                   "return_lag_1", "return_lag_2", "return_lag_3",
-                   "return_lag_5", "return_lag_10", "sector_rel_return", "market_rel_return",
+                   "return_lag_1", "return_lag_5", "return_lag_10",
+                   "return_lag_20", "sector_rel_return", "market_rel_return",
                    "sector_rel_20d", "market_rel_20d"]]
     df[indicator_cols] = df.groupby("ticker")[indicator_cols].transform(
         lambda x: x.ffill()
