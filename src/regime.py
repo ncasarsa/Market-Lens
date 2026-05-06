@@ -87,12 +87,6 @@ def label_clusters_by_rank(cluster_stats: dict) -> dict:
     Guarantees all 4 labels are used exactly once regardless of the
     return distribution (handles all-positive or all-negative markets).
 
-    Args:
-        cluster_stats: {cluster_id: {"mean": float, "std": float}}
-
-    Returns:
-        cluster_map: {cluster_id: label_string}
-
     Logic:
         volatile  = highest std  (isolate noise first)
         bull      = highest mean among remaining 3
@@ -164,35 +158,44 @@ def fit_regimes(
     labels = kmeans.fit_predict(latents_scaled)
 
     # Step 4: score clusters on intra-window mean daily log return
-    # Using log_return (daily) not target (5-day forward) — reflects window dynamics
+    # Build (ticker, date) -> log_return lookup
+    df_copy = df.copy()
+    df_copy["date"] = pd.to_datetime(df_copy["date"])
     log_ret_lookup = (
-        df.set_index(["ticker", pd.to_datetime(df["date"])])["log_return"]
+        df_copy.set_index(["ticker", "date"])["log_return"]
         .to_dict()
     )
 
-    # Pre-sort ticker date arrays once for fast searchsorted
-    ticker_dates_map = {
-        ticker: np.sort(grp["date"].values)
-        for ticker, grp in df.groupby("ticker")
-    }
+    # Pre-build per-ticker sorted int64 timestamp arrays for fast searchsorted.
+    # np.searchsorted requires a homogeneous comparable array — int64 nanoseconds
+    # avoids the Timestamp vs int comparison TypeError.
+    ticker_dates_ns_map = {}   # ticker -> sorted int64 ns array
+    ticker_dates_ts_map = {}   # ticker -> sorted Timestamp array (for lookup)
+
+    for ticker, grp in df_copy.groupby("ticker"):
+        sorted_dates = grp["date"].sort_values().values          # numpy datetime64
+        ticker_dates_ns_map[ticker] = sorted_dates.astype("int64")  # ns since epoch
+        ticker_dates_ts_map[ticker] = pd.to_datetime(sorted_dates)  # Timestamps
 
     cluster_returns = {c: [] for c in range(n_clusters)}
 
     for i, (ticker, end_date) in enumerate(metadata):
-        end_ts       = pd.Timestamp(end_date)
-        ticker_dates = ticker_dates_map.get(ticker, np.array([]))
+        end_ts_ns = pd.Timestamp(end_date).value  # int64 nanoseconds
 
-        if len(ticker_dates) == 0:
+        dates_ns = ticker_dates_ns_map.get(ticker)
+        dates_ts = ticker_dates_ts_map.get(ticker)
+
+        if dates_ns is None or len(dates_ns) == 0:
             continue
 
-        # Walk back seq_len days from end_date to get the full window
-        end_pos   = int(np.searchsorted(ticker_dates, end_ts, side="right")) - 1
+        # searchsorted on int64 — no type mismatch
+        end_pos   = int(np.searchsorted(dates_ns, end_ts_ns, side="right")) - 1
         start_pos = max(0, end_pos - seq_len + 1)
-        window_dates = ticker_dates[start_pos : end_pos + 1]
+        window_ts = dates_ts[start_pos : end_pos + 1]
 
         rets = [
-            log_ret_lookup.get((ticker, pd.Timestamp(d)), np.nan)
-            for d in window_dates
+            log_ret_lookup.get((ticker, ts), np.nan)
+            for ts in window_ts
         ]
         rets = [r for r in rets if not np.isnan(r)]
 
