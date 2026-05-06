@@ -267,12 +267,12 @@ def shap_waterfall(
     background = torch.cat(bg_inputs, dim=0)[:n_background]
 
     # Get val sample to explain
-    val_batches = []
     for batch in val_loader:
-        x, _ = batch
-        val_batches.append(x["encoder_cont"].to(device))
-    val_enc = torch.cat(val_batches, dim=0)
-    sample  = val_enc[sample_idx : sample_idx + 1]
+        # trim ref_x to match n_background so tensor sizes align
+        ref_x = {k: v[:n_background] if isinstance(v, torch.Tensor) else v
+                for k, v in ref_x.items()}
+        ref_x = {k: v.to(device) for k, v in ref_x.items()}
+        break
 
     # Wrapper: accepts encoder_cont tensor, returns median quantile prediction
     class EncoderWrapper(torch.nn.Module):
