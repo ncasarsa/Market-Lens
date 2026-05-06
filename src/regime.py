@@ -7,7 +7,7 @@ After train_regime_ae() produces a trained RegimeAutoencoder, this module:
     1. Encodes all windows into latent vectors
     2. Fits KMeans on those vectors
     3. Labels each cluster semantically (bull / bear / volatile / sideways)
-       using rank-based assignment — guarantees all 4 labels used exactly once
+       using rank-based assignment on intra-window mean log return and std
     4. Merges a "regime" string column back onto the main price DataFrame
 
 Usage:
@@ -16,13 +16,12 @@ Usage:
     ae_model, windows, metadata = train_regime_ae(df)
     cluster_map = fit_regimes(ae_model, windows, metadata, df)
     df = attach_regime_labels(df, cluster_map)
-    df.to_parquet("data/dataset_with_regimes.parquet", index=False)
 
 Regime label semantics:
-    volatile   highest std cluster
-    bull       highest mean among remaining 3
-    bear       lowest mean among remaining 3
-    sideways   the leftover cluster
+    volatile   highest intra-window return std (most chaotic)
+    bull       highest intra-window mean return among remaining 3
+    bear       lowest  intra-window mean return among remaining 3
+    sideways   the one left over
 """
 
 import os
@@ -62,9 +61,8 @@ def extract_latents(
     """
     model.eval()
 
-    # Normalize the same way trainer.py does before encoding
     mean = windows.mean(dim=(0, 1), keepdim=True)
-    std  = windows.std(dim=(0, 1), keepdim=True) + 1e-8
+    std  = windows.std(dim=(0, 1),  keepdim=True) + 1e-8
     windows_norm = (windows - mean) / std
 
     latents = []
@@ -86,8 +84,8 @@ def extract_latents(
 def label_clusters_by_rank(cluster_stats: dict) -> dict:
     """
     Assigns bull/bear/volatile/sideways by ranking clusters.
-    Guarantees all 4 labels are used exactly once regardless of
-    the return distribution (handles all-positive or all-negative markets).
+    Guarantees all 4 labels are used exactly once regardless of the
+    return distribution (handles all-positive or all-negative markets).
 
     Args:
         cluster_stats: {cluster_id: {"mean": float, "std": float}}
@@ -96,26 +94,21 @@ def label_clusters_by_rank(cluster_stats: dict) -> dict:
         cluster_map: {cluster_id: label_string}
 
     Logic:
-        volatile  = highest std  (most chaotic, pick first to isolate noise)
+        volatile  = highest std  (isolate noise first)
         bull      = highest mean among remaining 3
-        bear      = lowest mean among remaining 3
+        bear      = lowest  mean among remaining 3
         sideways  = the one left over
     """
     ids = list(cluster_stats.keys())
     assert len(ids) == 4, f"Expected 4 clusters, got {len(ids)}"
 
-    # Step 1: volatile = highest std
     volatile_id = max(ids, key=lambda c: cluster_stats[c]["std"])
-    remaining = [c for c in ids if c != volatile_id]
+    remaining   = [c for c in ids if c != volatile_id]
 
-    # Step 2: bull = highest mean of remaining 3
-    bull_id = max(remaining, key=lambda c: cluster_stats[c]["mean"])
+    bull_id   = max(remaining, key=lambda c: cluster_stats[c]["mean"])
     remaining = [c for c in remaining if c != bull_id]
 
-    # Step 3: bear = lowest mean of remaining 2
-    bear_id = min(remaining, key=lambda c: cluster_stats[c]["mean"])
-
-    # Step 4: sideways = whatever is left
+    bear_id     = min(remaining, key=lambda c: cluster_stats[c]["mean"])
     sideways_id = [c for c in remaining if c != bear_id][0]
 
     return {
@@ -140,13 +133,15 @@ def fit_regimes(
 ) -> dict:
     """
     Fits KMeans on the latent space and produces a cluster-to-label map.
-    Also saves a (ticker, date, cluster, regime) parquet for attach_regime_labels.
+    Scores each cluster using the mean intra-window daily log return so
+    that labels reflect actual price dynamics of the window, not just
+    the single forward return at the end date.
 
     Args:
         model:      trained RegimeAutoencoder
         windows:    (N, seq_len, n_features) tensor from make_regime_windows
         metadata:   list of (ticker, end_date) from make_regime_windows
-        df:         cleaned price DataFrame — used to look up returns per window
+        df:         cleaned price DataFrame with a "log_return" column
         n_clusters: number of KMeans clusters (defaults to REGIME["n_clusters"])
         save_path:  if provided, saves regime labels parquet here
 
@@ -154,31 +149,55 @@ def fit_regimes(
         cluster_map: {cluster_int -> regime_label_string}
     """
     n_clusters = n_clusters or REGIME["n_clusters"]
+    seq_len    = REGIME["sequence_length"]
 
     # Step 1: encode
     latents = extract_latents(model, windows)
 
     # Step 2: scale latents (KMeans is distance-based)
-    scaler = StandardScaler()
+    scaler         = StandardScaler()
     latents_scaled = scaler.fit_transform(latents)
 
-    # Step 3: fit KMeans — store the fitted object so attach can reuse it
+    # Step 3: fit KMeans
     print(f"Fitting KMeans with {n_clusters} clusters on {len(latents)} windows...")
     kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
     labels = kmeans.fit_predict(latents_scaled)
 
-    # Step 4: compute per-cluster return stats for semantic labeling
-    ret_lookup = (
-        df.set_index(["ticker", pd.to_datetime(df["date"])])[TARGET_COL]
+    # Step 4: score clusters on intra-window mean daily log return
+    # Using log_return (daily) not target (5-day forward) — reflects window dynamics
+    log_ret_lookup = (
+        df.set_index(["ticker", pd.to_datetime(df["date"])])["log_return"]
         .to_dict()
     )
 
+    # Pre-sort ticker date arrays once for fast searchsorted
+    ticker_dates_map = {
+        ticker: np.sort(grp["date"].values)
+        for ticker, grp in df.groupby("ticker")
+    }
+
     cluster_returns = {c: [] for c in range(n_clusters)}
+
     for i, (ticker, end_date) in enumerate(metadata):
-        key = (ticker, pd.Timestamp(end_date))
-        ret = ret_lookup.get(key, np.nan)
-        if not np.isnan(ret):
-            cluster_returns[labels[i]].append(ret)
+        end_ts       = pd.Timestamp(end_date)
+        ticker_dates = ticker_dates_map.get(ticker, np.array([]))
+
+        if len(ticker_dates) == 0:
+            continue
+
+        # Walk back seq_len days from end_date to get the full window
+        end_pos   = int(np.searchsorted(ticker_dates, end_ts, side="right")) - 1
+        start_pos = max(0, end_pos - seq_len + 1)
+        window_dates = ticker_dates[start_pos : end_pos + 1]
+
+        rets = [
+            log_ret_lookup.get((ticker, pd.Timestamp(d)), np.nan)
+            for d in window_dates
+        ]
+        rets = [r for r in rets if not np.isnan(r)]
+
+        if rets:
+            cluster_returns[labels[i]].append(float(np.mean(rets)))
 
     cluster_stats = {}
     for c in range(n_clusters):
@@ -188,7 +207,7 @@ def fit_regimes(
             "std":  float(np.std(rets))  if rets else 0.0,
         }
 
-    # Step 5: rank-based labeling — always produces 4 distinct labels
+    # Step 5: rank-based labeling — always 4 distinct labels
     cluster_map = label_clusters_by_rank(cluster_stats)
 
     print("Cluster assignments:")
@@ -196,7 +215,7 @@ def fit_regimes(
         stats = cluster_stats[c]
         count = int((labels == c).sum())
         print(f"  Cluster {c} -> {label:10s}  "
-              f"mean_ret={stats['mean']:+.5f}  std={stats['std']:.5f}  n={count}")
+              f"mean_ret={stats['mean']:+.7f}  std={stats['std']:.7f}  n={count}")
 
     # Step 6: build and save the labeled parquet
     rows = [
@@ -228,13 +247,11 @@ def attach_regime_labels(
 ) -> pd.DataFrame:
     """
     Merges the saved regime_labels.parquet onto the main price DataFrame.
-
-    Uses the parquet saved by fit_regimes — does NOT re-run KMeans, so
-    cluster IDs are guaranteed to match cluster_map exactly.
+    Reads the parquet saved by fit_regimes — does NOT re-run KMeans.
 
     Args:
         df:          cleaned price DataFrame
-        cluster_map: output of fit_regimes (used only for logging here)
+        cluster_map: output of fit_regimes (used only for logging)
         regime_path: path to regime_labels.parquet (defaults to DATA_DIR)
 
     Returns:

@@ -4,16 +4,11 @@ explainability.py
 Post-hoc explainability for the trained TFT model.
 
 1. attention_heatmap()     — extracts and plots temporal attention weights
-                             over the past N trading days per ticker
-2. variable_importance()   — plots encoder/decoder/static variable selection
-                             weights from TFT's built-in interpret_output()
-3. shap_waterfall()        — GradientExplainer SHAP values for a single
-                             prediction, plotted as a waterfall chart
-4. explain_prediction()    — convenience wrapper: runs all three for one
-                             ticker on one date
+2. variable_importance()   — plots encoder variable selection weights
+3. shap_waterfall()        — GradientExplainer SHAP for a single prediction
 
 Usage (from project root):
-    python src/explainability.py --ticker AAPL --date 2024-06-01
+    python src/explainability.py --ticker AAPL
 """
 
 import os
@@ -25,9 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import pandas as pd
 import torch
-import matplotlib
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
 import shap
 
 from pytorch_forecasting import TimeSeriesDataSet
@@ -49,7 +42,6 @@ from config import (
 # ---------------------------------------------------------------------------
 
 def _load_model(checkpoint_path: str = None):
-    """Load MarketTFT from checkpoint."""
     from model import MarketTFT
     ckpt = checkpoint_path or str(CHECKPOINT_PATH.parent / "tft_best.ckpt")
     model = MarketTFT.load_from_checkpoint(ckpt)
@@ -58,10 +50,6 @@ def _load_model(checkpoint_path: str = None):
 
 
 def _get_feature_names(model) -> dict:
-    """
-    Extract feature name lists from a trained TFT model.
-    Returns dict with keys: encoder, decoder, static_cats, static_reals.
-    """
     hparams = model.hparams
     return {
         "encoder": (
@@ -77,24 +65,6 @@ def _get_feature_names(model) -> dict:
     }
 
 
-def _build_single_ticker_loader(
-    df: pd.DataFrame,
-    ticker: str,
-    train_dataset: TimeSeriesDataSet,
-    batch_size: int = 64,
-):
-    """Build a dataloader filtered to a single ticker for inference."""
-    ticker_df = df[df[GROUP_COL] == ticker].copy()
-    ds = TimeSeriesDataSet.from_dataset(
-        train_dataset,
-        ticker_df,
-        predict=False,
-        stop_randomization=True,
-        min_encoder_length=TFT_CFG["max_encoder_length"],
-    )
-    return ds.to_dataloader(train=False, batch_size=batch_size, num_workers=0)
-
-
 # ---------------------------------------------------------------------------
 # 1. Attention Heatmap
 # ---------------------------------------------------------------------------
@@ -102,41 +72,74 @@ def _build_single_ticker_loader(
 def attention_heatmap(
     model,
     predictions,
-    feature_names: list[str],
+    feature_names: list,
     ticker: str = None,
     n_samples: int = 30,
     save_path: str = None,
 ) -> plt.Figure:
     """
-    Plots a heatmap of temporal self-attention weights over the encoder
-    window. Rows = prediction samples, Cols = encoder timesteps.
+    Plots a heatmap of temporal self-attention weights over the encoder window.
+    Extracts attention from raw prediction output directly to avoid the
+    interpret_output(reduction=None) bug in some pytorch-forecasting versions.
     """
-    # interpret_output returns attention under the "attention" key.
-    # Shape after extraction: (N, n_heads, pred_len, encoder_len)
-    interpretation = model.interpret_output(
-        predictions.output,
-        reduction=None,   # None keeps per-sample tensors, not collapsed mean
-    )
+    # Extract attention from the raw output dict
+    # predictions.output is a namedtuple — attention lives at different keys
+    # depending on PF version. Try multiple approaches.
+    attn = None
 
-    attn = interpretation.get("attention")
+    # Approach 1: direct attribute on output namedtuple
+    output = predictions.output
+    if hasattr(output, "attention"):
+        attn = output.attention
+    elif hasattr(output, "decoder_attention"):
+        attn = output.decoder_attention
+
+    # Approach 2: interpret_output with reduction="mean" then re-extract
+    # (works on all PF versions)
     if attn is None:
-        raise ValueError(
-            "interpret_output() returned no 'attention' key. "
-            "Check your pytorch-forecasting version."
-        )
+        try:
+            interp = model.interpret_output(output, reduction="mean")
+            # "attention" key holds (encoder_len,) averaged weights
+            attn_mean = interp.get("attention")
+            if attn_mean is not None:
+                attn_mean = attn_mean.detach().cpu().numpy()  # (encoder_len,)
+                # Tile into a pseudo-heatmap so the figure still renders
+                attn_tiled = np.tile(attn_mean, (n_samples, 1))
 
-    attn = attn.detach().cpu()  # (N, n_heads, pred_len, encoder_len)
+                fig, ax = plt.subplots(figsize=(14, max(4, n_samples // 4)))
+                im = ax.imshow(attn_tiled, aspect="auto", cmap="YlOrRd",
+                               interpolation="nearest")
+                plt.colorbar(im, ax=ax, label="Attention Weight")
+                ax.set_xlabel("Encoder Timestep (0 = oldest, right = most recent)")
+                ax.set_ylabel("(averaged across all samples)")
+                title = "TFT Temporal Attention Weights (mean)"
+                if ticker:
+                    title += f" — {ticker}"
+                ax.set_title(title)
+                plt.tight_layout()
+                if save_path:
+                    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+                return fig
+        except Exception as e:
+            raise RuntimeError(f"attention_heatmap fallback also failed: {e}")
 
-    # Average over heads and prediction horizon → (N, encoder_len)
-    attn_avg = attn.mean(dim=(1, 2))[:n_samples]
+    # Full per-sample attention path
+    attn = attn.detach().cpu()
+
+    # Shape handling: PF versions differ
+    # Could be (N, n_heads, pred_len, encoder_len) or (N, encoder_len)
+    if attn.dim() == 4:
+        attn_avg = attn.mean(dim=(1, 2))[:n_samples]   # (N, encoder_len)
+    elif attn.dim() == 3:
+        attn_avg = attn.mean(dim=1)[:n_samples]         # (N, encoder_len)
+    elif attn.dim() == 2:
+        attn_avg = attn[:n_samples]                     # (N, encoder_len)
+    else:
+        raise ValueError(f"Unexpected attention shape: {attn.shape}")
 
     fig, ax = plt.subplots(figsize=(14, max(4, n_samples // 4)))
-    im = ax.imshow(
-        attn_avg.numpy(),
-        aspect="auto",
-        cmap="YlOrRd",
-        interpolation="nearest",
-    )
+    im = ax.imshow(attn_avg.numpy(), aspect="auto", cmap="YlOrRd",
+                   interpolation="nearest")
     plt.colorbar(im, ax=ax, label="Attention Weight")
     ax.set_xlabel("Encoder Timestep (0 = oldest, right = most recent)")
     ax.set_ylabel("Prediction Sample")
@@ -158,49 +161,40 @@ def attention_heatmap(
 def variable_importance(
     model,
     predictions,
-    encoder_feature_names: list[str],
-    decoder_feature_names: list[str] = None,
-    static_feature_names: list[str] = None,
+    encoder_feature_names: list,
+    decoder_feature_names: list = None,
+    static_feature_names: list = None,
     top_n: int = 20,
     save_path: str = None,
 ) -> plt.Figure:
     """
-    Plots TFT variable selection weights for encoder, decoder, and static
-    inputs as horizontal bar charts.
-
-    Args:
-        model:                  trained MarketTFT
-        predictions:            output from model.predict(..., mode='raw')
-        encoder_feature_names:  list of encoder input names
-        decoder_feature_names:  list of decoder input names (optional)
-        static_feature_names:   list of static input names (optional)
-        top_n:                  number of top features to show per panel
-        save_path:              if provided, saves figure to this path
-
-    Returns:
-        matplotlib Figure
+    Plots TFT variable selection weights for encoder, decoder, and static inputs.
     """
     interpretation = model.interpret_output(
-        predictions.output,
-        reduction="mean",
+        predictions.output, reduction="mean"
     )
 
-    # PF appends relative_time_idx internally
-    enc_names = encoder_feature_names + ["relative_time_idx"]
-    enc_imp   = interpretation["encoder_variables"].cpu().numpy()
-    enc_series = pd.Series(
-        enc_imp, index=enc_names[:len(enc_imp)]
-    ).sort_values(ascending=True).tail(top_n)
+    enc_names  = encoder_feature_names + ["relative_time_idx"]
+    enc_imp    = interpretation["encoder_variables"].cpu().numpy()
+    enc_series = (
+        pd.Series(enc_imp, index=enc_names[:len(enc_imp)])
+        .sort_values(ascending=True)
+        .tail(top_n)
+    )
 
-    n_panels = 1
+    n_panels   = 1
     dec_series = static_series = None
 
     dec_imp = interpretation.get("decoder_variables")
     if dec_imp is not None and decoder_feature_names:
-        dec_series = pd.Series(
-            dec_imp.cpu().numpy(),
-            index=(decoder_feature_names + ["relative_time_idx"])[:len(dec_imp)]
-        ).sort_values(ascending=True).tail(top_n)
+        dec_series = (
+            pd.Series(
+                dec_imp.cpu().numpy(),
+                index=(decoder_feature_names + ["relative_time_idx"])[:len(dec_imp)]
+            )
+            .sort_values(ascending=True)
+            .tail(top_n)
+        )
         n_panels += 1
 
     static_imp = interpretation.get("static_variables")
@@ -215,7 +209,6 @@ def variable_importance(
     if n_panels == 1:
         axes = [axes]
 
-    # Encoder
     axes[0].barh(enc_series.index, enc_series.values, color="steelblue")
     axes[0].set_title(f"Encoder Variable Importance (Top {top_n})")
     axes[0].set_xlabel("Importance")
@@ -249,97 +242,79 @@ def shap_waterfall(
     model,
     train_loader,
     val_loader,
-    feature_names: list[str],
+    feature_names: list,
     sample_idx: int = 0,
     n_background: int = 100,
     save_path: str = None,
 ) -> plt.Figure:
     """
     Computes GradientExplainer SHAP values for a single prediction and
-    plots them as a waterfall chart showing each feature's contribution.
-
-    Args:
-        model:          trained MarketTFT (CPU or GPU)
-        train_loader:   DataLoader used as SHAP background distribution
-        val_loader:     DataLoader to explain predictions from
-        feature_names:  encoder feature names
-        sample_idx:     which val sample to explain (0-indexed)
-        n_background:   number of background samples for GradientExplainer
-        save_path:      if provided, saves figure to this path
-
-    Returns:
-        matplotlib Figure
+    plots them as a waterfall chart.
     """
     device = next(model.parameters()).device
     model.eval()
 
-    # Collect background samples from train loader
-    bg_encoder_inputs = []
+    # Collect background samples
+    bg_inputs = []
     count = 0
     for batch in train_loader:
         x, _ = batch
         enc = x["encoder_cont"].to(device)
-        bg_encoder_inputs.append(enc)
+        bg_inputs.append(enc)
         count += enc.shape[0]
         if count >= n_background:
             break
-    background = torch.cat(bg_encoder_inputs, dim=0)[:n_background]
+    background = torch.cat(bg_inputs, dim=0)[:n_background]
 
-    # Get the specific val sample to explain
+    # Get val sample to explain
     val_batches = []
     for batch in val_loader:
         x, _ = batch
         val_batches.append(x["encoder_cont"].to(device))
     val_enc = torch.cat(val_batches, dim=0)
-    sample = val_enc[sample_idx:sample_idx + 1]  # (1, seq_len, n_features)
+    sample  = val_enc[sample_idx : sample_idx + 1]
 
-    # Wrap model to accept raw encoder_cont tensor
+    # Wrapper: accepts encoder_cont tensor, returns median quantile prediction
     class EncoderWrapper(torch.nn.Module):
-        def __init__(self, tft_model, sample_batch_x):
+        def __init__(self, tft_model, ref_batch_x):
             super().__init__()
             self.tft   = tft_model
-            self.ref_x = sample_batch_x  # store full batch_x as reference
+            self.ref_x = ref_batch_x
 
         def forward(self, encoder_cont):
-            # Rebuild a minimal batch_x with swapped encoder_cont
             import copy
             batch_x = copy.deepcopy(self.ref_x)
             batch_x["encoder_cont"] = encoder_cont
             out = self.tft(batch_x)
-            # Return median quantile (index 3) prediction
-            return out["prediction"][:, :, 3]  # (batch, pred_len)
+            return out["prediction"][:, :, 3]  # median quantile
 
-    # Get a reference batch_x
     for batch in val_loader:
         ref_x, _ = batch
         ref_x = {k: v.to(device) for k, v in ref_x.items()}
         break
 
-    wrapper = EncoderWrapper(model, ref_x)
-
-    # GradientExplainer
+    wrapper   = EncoderWrapper(model, ref_x)
     explainer = shap.GradientExplainer(wrapper, background)
-    shap_values = explainer.shap_values(sample)  # list or array
+    shap_vals = explainer.shap_values(sample)
 
-    if isinstance(shap_values, list):
-        shap_values = shap_values[0]
+    if isinstance(shap_vals, list):
+        shap_vals = shap_vals[0]
 
-    # Average SHAP over sequence length → (n_features,)
-    shap_mean = np.abs(shap_values[0]).mean(axis=0)
+    # Average |SHAP| over sequence length → (n_features,)
+    shap_mean  = np.abs(shap_vals[0]).mean(axis=0)
+    shap_series = (
+        pd.Series(shap_mean, index=feature_names[:len(shap_mean)])
+        .sort_values(ascending=False)
+        .head(20)
+    )
 
-    shap_series = pd.Series(shap_mean, index=feature_names[:len(shap_mean)])
-    shap_series = shap_series.sort_values(ascending=False).head(20)
-
-    # Waterfall-style bar chart
     fig, ax = plt.subplots(figsize=(10, 7))
     colors = ["#d73027" if v > 0 else "#4575b4" for v in shap_series.values]
-    ax.barh(
-        shap_series.index[::-1],
-        shap_series.values[::-1],
-        color=colors[::-1],
+    ax.barh(shap_series.index[::-1], shap_series.values[::-1], color=colors[::-1])
+    ax.set_title(
+        f"SHAP Feature Attribution — Sample {sample_idx}\n"
+        f"(mean |SHAP| over {TFT_CFG['max_encoder_length']}-day encoder window)"
     )
-    ax.set_title(f"SHAP Feature Attribution — Sample {sample_idx}\n"
-                 f"(mean |SHAP| over 60-day encoder window)")
     ax.set_xlabel("|SHAP value| — average impact on prediction")
     ax.axvline(0, color="black", linewidth=0.8)
     plt.tight_layout()
@@ -360,65 +335,36 @@ def explain_prediction(
     checkpoint_path: str = None,
     save_dir: str = None,
 ) -> dict:
-    """
-    Runs all three explainability methods for a given ticker and returns
-    a dict of figures.
-
-    Args:
-        df:               full cleaned DataFrame
-        train_dataset:    TimeSeriesDataSet used during training
-        ticker:           ticker symbol to explain
-        checkpoint_path:  path to TFT checkpoint (defaults to config path)
-        save_dir:         if provided, saves all figures here
-
-    Returns:
-        dict with keys: 'attention', 'importance', 'shap'
-    """
     from model import build_timeseries_dataset
-    from torch.utils.data import DataLoader
 
     print(f"Explaining predictions for {ticker}...")
-
-    model = _load_model(checkpoint_path)
+    model         = _load_model(checkpoint_path)
     feature_names = _get_feature_names(model)
 
-    # Full val loader
-    _, val_ds = build_timeseries_dataset(df, cutoff=VAL_START)
-    val_loader = val_ds.to_dataloader(train=False, batch_size=64, num_workers=0)
+    _, val_ds    = build_timeseries_dataset(df, cutoff=VAL_START)
+    train_ds, _  = build_timeseries_dataset(df, cutoff=VAL_START)
+    val_loader   = val_ds.to_dataloader(train=False, batch_size=64, num_workers=0)
+    train_loader = train_ds.to_dataloader(train=True,  batch_size=64, num_workers=0)
 
-    # Train loader (for SHAP background)
-    train_ds, _ = build_timeseries_dataset(df, cutoff=VAL_START)
-    train_loader = train_ds.to_dataloader(train=True, batch_size=64, num_workers=0)
-
-    # Run predictions
-    print("  Running predictions...")
-    predictions = model.predict(val_loader, mode="raw", return_x=True)
-
-    enc_names = feature_names["encoder"]
-
-    # Attention heatmap
-    print("  Computing attention heatmap...")
-    attn_save = os.path.join(save_dir, f"{ticker}_attention.png") if save_dir else None
-    fig_attn = attention_heatmap(model, predictions, enc_names, ticker=ticker,
-                                  save_path=attn_save)
-
-    # Variable importance
-    print("  Computing variable importance...")
-    imp_save = os.path.join(save_dir, f"{ticker}_importance.png") if save_dir else None
+    predictions  = model.predict(val_loader, mode="raw", return_x=True)
+    enc_names    = feature_names["encoder"]
     static_names = feature_names["static_cats"] + feature_names["static_reals"]
-    fig_imp = variable_importance(
+
+    attn_save = os.path.join(save_dir, f"{ticker}_attention.png") if save_dir else None
+    fig_attn  = attention_heatmap(model, predictions, enc_names,
+                                  ticker=ticker, save_path=attn_save)
+
+    imp_save = os.path.join(save_dir, f"{ticker}_importance.png") if save_dir else None
+    fig_imp  = variable_importance(
         model, predictions, enc_names,
-        static_feature_names=static_names if static_names else None,
+        static_feature_names=static_names or None,
         save_path=imp_save,
     )
 
-    # SHAP
-    print("  Computing SHAP values (this may take ~1-2 minutes)...")
     shap_save = os.path.join(save_dir, f"{ticker}_shap.png") if save_dir else None
-    fig_shap = shap_waterfall(
+    fig_shap  = shap_waterfall(
         model, train_loader, val_loader, enc_names,
-        sample_idx=0, n_background=50,
-        save_path=shap_save,
+        sample_idx=0, n_background=50, save_path=shap_save,
     )
 
     print(f"Done. Figures ready for {ticker}.")
@@ -431,10 +377,10 @@ def explain_prediction(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MarketLens explainability")
-    parser.add_argument("--ticker", type=str, default="AAPL")
+    parser.add_argument("--ticker",     type=str, default="AAPL")
     parser.add_argument("--checkpoint", type=str, default=None)
-    parser.add_argument("--save-dir", type=str, default=None)
-    parser.add_argument("--mock", action="store_true")
+    parser.add_argument("--save-dir",   type=str, default=None)
+    parser.add_argument("--mock",       action="store_true")
     args = parser.parse_args()
 
     from data import (
@@ -459,12 +405,10 @@ if __name__ == "__main__":
                            save_path=str(DATASET_PATH))
 
     train_ds, _ = build_timeseries_dataset(df, cutoff=VAL_START)
-
     figs = explain_prediction(
         df, train_ds,
         ticker=args.ticker,
         checkpoint_path=args.checkpoint,
         save_dir=args.save_dir,
     )
-
     plt.show()
