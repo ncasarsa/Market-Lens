@@ -266,13 +266,25 @@ def shap_waterfall(
             break
     background = torch.cat(bg_inputs, dim=0)[:n_background]
 
-    # Get val sample to explain
+    # Get the specific val sample to explain
+    val_batches = []
     for batch in val_loader:
-        # trim ref_x to match n_background so tensor sizes align
-        ref_x = {k: v[:n_background] if isinstance(v, torch.Tensor) else v
-                for k, v in ref_x.items()}
-        ref_x = {k: v.to(device) for k, v in ref_x.items()}
+        x, _ = batch
+        val_batches.append(x["encoder_cont"].to(device))
+    val_enc = torch.cat(val_batches, dim=0)
+    sample  = val_enc[sample_idx : sample_idx + 1]
+
+    # Grab ref_x trimmed to n_background to avoid batch size mismatch
+    # in TFT's forward (encoder_cont + decoder_cont cat requires matching sizes)
+    for batch in val_loader:
+        _x, _ = batch
+        ref_x = {k: v[:n_background].to(device) if isinstance(v, torch.Tensor) else v
+                 for k, v in _x.items()}
         break
+
+    wrapper   = EncoderWrapper(model, ref_x)
+    explainer = shap.GradientExplainer(wrapper, background)
+    shap_vals = explainer.shap_values(sample)
 
     # Wrapper: accepts encoder_cont tensor, returns median quantile prediction
     class EncoderWrapper(torch.nn.Module):
