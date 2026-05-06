@@ -48,6 +48,11 @@ TICKER_SECTORS = {
     "LMT": "defense", "RTX": "defense", "NOC": "defense",
     # Utilities — highest liquidity
     "NEE": "utilities", "DUK": "utilities", "SO": "utilities",
+    # Sector ETFs
+    "XLK": "tech_etf", "XLE": "energy_etf", "XLF": "financials_etf",
+    "XLU": "utilities_etf", "XLI": "defense_etf",
+    # Market ETFs
+    "SPY": "market_etf", "QQQ": "market_etf",
 }
 
 TICKERS  = list(TICKER_SECTORS.keys())
@@ -91,7 +96,7 @@ OHLCV_COLS = ["open", "high", "low", "close", "volume"]
 # All continuous features passed as observed inputs to TFT.
 # log_return is intentionally excluded: it is a one-step lag of the target,
 # so including it causes direct data leakage into the encoder.
-TIME_VARYING_KNOWN_REALS     = ["days_to_fomc", "days_to_earnings", "is_earnings_week"]          # e.g. FOMC dates -- added later
+TIME_VARYING_KNOWN_REALS     = ["days_to_fomc", "days_to_earnings", "is_earnings_week", "vix_normalized", "vix_change"]          # e.g. FOMC dates -- added later
 TIME_VARYING_UNKNOWN_REALS   = OHLCV_COLS + INDICATOR_COLS +  [
     "sentiment_score",
     "sentiment_volume",
@@ -101,6 +106,10 @@ TIME_VARYING_UNKNOWN_REALS   = OHLCV_COLS + INDICATOR_COLS +  [
     "return_lag_3",
     "return_lag_5",
     "return_lag_10",
+    "sector_rel_return",
+    "market_rel_return",
+    "sector_rel_20d",
+    "market_rel_20d"
 ]
 
 # Static features (don't change over time for a given ticker)

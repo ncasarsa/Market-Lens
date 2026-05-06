@@ -116,6 +116,75 @@ def download_ohlcv(
     return combined
 
 
+def add_vix(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
+    """
+    Downloads VIX and joins vix_normalized and vix_change onto the main
+    price DataFrame. Both go into TIME_VARYING_KNOWN_REALS — VIX futures
+    prices are publicly known in advance.
+    """
+    print("Downloading VIX...")
+    try:
+        vix = yf.download("^VIX", start=start, end=end,
+                          auto_adjust=True, progress=False)
+        vix = vix["Close"].reset_index()
+        vix.columns = ["date", "vix"]
+        vix["date"]           = pd.to_datetime(vix["date"])
+        vix["vix_normalized"] = (vix["vix"] - vix["vix"].mean()) / vix["vix"].std()
+        vix["vix_change"]     = vix["vix"].pct_change().fillna(0.0)
+
+        df = df.merge(vix[["date", "vix_normalized", "vix_change"]],
+                      on="date", how="left")
+        df["vix_normalized"] = df["vix_normalized"].ffill().bfill()
+        df["vix_change"]     = df["vix_change"].ffill().bfill()
+        print(f"  VIX joined. Coverage: {df['vix_normalized'].notna().mean():.1%}")
+    except Exception as e:
+        print(f"  VIX download failed ({e}) — filling with zeros")
+        df["vix_normalized"] = 0.0
+        df["vix_change"]     = 0.0
+    return df
+
+def add_cross_sectional_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Adds cross-sectional relative strength features per trading day.
+    These capture how each ticker is performing relative to its sector
+    and the broader market — documented return predictors that the TFT
+    cannot derive from single-ticker history alone.
+
+    Columns added:
+        sector_rel_return  : return minus sector mean that day
+        market_rel_return  : return minus market mean that day
+        sector_rel_20d     : 20-day rolling mean of sector_rel_return
+        market_rel_20d     : 20-day rolling mean of market_rel_return
+    """
+    print("Adding cross-sectional features...")
+    df = df.copy()
+
+    # Daily relative returns — computed cross-sectionally per date
+    df["sector_rel_return"] = df.groupby(["date", "sector"])["log_return"].transform(
+        lambda x: x - x.mean()
+    )
+    df["market_rel_return"] = df.groupby("date")["log_return"].transform(
+        lambda x: x - x.mean()
+    )
+
+    # Rolling 20-day mean — medium-term momentum signal
+    df["sector_rel_20d"] = df.groupby("ticker")["sector_rel_return"].transform(
+        lambda x: x.rolling(20, min_periods=5).mean()
+    )
+    df["market_rel_20d"] = df.groupby("ticker")["market_rel_return"].transform(
+        lambda x: x.rolling(20, min_periods=5).mean()
+    )
+
+    # Fill any NaNs from rolling window start
+    for col in ["sector_rel_return", "market_rel_return",
+                "sector_rel_20d", "market_rel_20d"]:
+        df[col] = df.groupby("ticker")[col].transform(
+            lambda x: x.ffill().fillna(0.0)
+        )
+
+    print(f"  Cross-sectional features added.")
+    return df
+
 # ---------------------------------------------------------------------------
 # 2. Technical indicators
 # ---------------------------------------------------------------------------
@@ -367,7 +436,8 @@ def clean_and_normalize(df: pd.DataFrame) -> pd.DataFrame:
                    "days_to_fomc", "days_to_earnings", "is_earnings_week",
                    "sentiment_score", "sentiment_volume", "sentiment_rolling_3d",
                    "return_lag_1", "return_lag_2", "return_lag_3",
-                   "return_lag_5", "return_lag_10"]]
+                   "return_lag_5", "return_lag_10", "sector_rel_return", "market_rel_return",
+                   "sector_rel_20d", "market_rel_20d"]]
     df[indicator_cols] = df.groupby("ticker")[indicator_cols].transform(
         lambda x: x.ffill()
     )
@@ -421,6 +491,8 @@ def build_dataset(
             [indicators...], log_return, target
     """
     df = download_ohlcv(tickers, start, end)
+    df = add_vix(df, start, end)
+    df = add_cross_sectional_features(df)
     df = add_technical_indicators(df)
     df = add_target(df)
     df = add_time_idx(df)
