@@ -3,23 +3,25 @@ explainability.py
 -----------------
 Post-hoc explainability for the trained TFT model.
 
-1. attention_heatmap()     — extracts and plots temporal attention weights
+1. attention_heatmap()     — extracts temporal attention from encoder_attention
 2. variable_importance()   — plots encoder variable selection weights
 3. shap_waterfall()        — GradientExplainer SHAP for a single prediction
 
-Usage (from project root):
+Usage:
     python src/explainability.py --ticker AAPL
 """
 
 import os
 import sys
 import argparse
+import copy
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
 import matplotlib.pyplot as plt
 import shap
 
@@ -35,6 +37,44 @@ from config import (
     VAL_START,
     TFT as TFT_CFG,
 )
+
+
+# ---------------------------------------------------------------------------
+# EncoderWrapper — module-level so it is always in scope
+# ---------------------------------------------------------------------------
+
+class EncoderWrapper(nn.Module):
+    """
+    Wraps a TFT model to accept a raw encoder_cont tensor as input.
+    Used by GradientExplainer which needs a simple Tensor -> Tensor function.
+
+    ref_x must already be trimmed to n_background rows so that
+    encoder_cont and decoder_cont sizes match in TFT's forward cat.
+    """
+
+    def __init__(self, tft_model, ref_batch_x: dict):
+        super().__init__()
+        self.tft   = tft_model
+        self.ref_x = ref_batch_x  # pre-trimmed to n_background
+
+    def forward(self, encoder_cont: torch.Tensor) -> torch.Tensor:
+        bs = encoder_cont.shape[0]
+        batch_x = {}
+        ref_bs  = self.ref_x["encoder_cont"].shape[0]
+
+        for k, v in self.ref_x.items():
+            if isinstance(v, torch.Tensor) and v.shape[0] == ref_bs:
+                if v.shape[0] >= bs:
+                    batch_x[k] = v[:bs]
+                else:
+                    repeats = (bs // v.shape[0]) + 1
+                    batch_x[k] = v.repeat(repeats, *([1] * (v.dim() - 1)))[:bs]
+            else:
+                batch_x[k] = v
+
+        batch_x["encoder_cont"] = encoder_cont
+        out = self.tft(batch_x)
+        return out["prediction"][:, :, 3]   # median quantile (index 3 of 7)
 
 
 # ---------------------------------------------------------------------------
@@ -78,64 +118,15 @@ def attention_heatmap(
     save_path: str = None,
 ) -> plt.Figure:
     """
-    Plots a heatmap of temporal self-attention weights over the encoder window.
-    Extracts attention from raw prediction output directly to avoid the
-    interpret_output(reduction=None) bug in some pytorch-forecasting versions.
+    Plots a heatmap of temporal self-attention weights.
+    Uses encoder_attention directly from the raw output namedtuple
+    — shape (N, pred_len, n_heads, encoder_len).
     """
-    # Extract attention from the raw output dict
-    # predictions.output is a namedtuple — attention lives at different keys
-    # depending on PF version. Try multiple approaches.
-    attn = None
+    # encoder_attention: (N, pred_len=1, n_heads=2, encoder_len=60)
+    attn = predictions.output.encoder_attention.detach().cpu()
 
-    # Approach 1: direct attribute on output namedtuple
-    output = predictions.output
-    if hasattr(output, "attention"):
-        attn = output.attention
-    elif hasattr(output, "decoder_attention"):
-        attn = output.decoder_attention
-
-    # Approach 2: interpret_output with reduction="mean" then re-extract
-    # (works on all PF versions)
-    if attn is None:
-        try:
-            interp = model.interpret_output(output, reduction="mean")
-            # "attention" key holds (encoder_len,) averaged weights
-            attn_mean = interp.get("attention")
-            if attn_mean is not None:
-                attn_mean = attn_mean.detach().cpu().numpy()  # (encoder_len,)
-                # Tile into a pseudo-heatmap so the figure still renders
-                attn_tiled = np.tile(attn_mean, (n_samples, 1))
-
-                fig, ax = plt.subplots(figsize=(14, max(4, n_samples // 4)))
-                im = ax.imshow(attn_tiled, aspect="auto", cmap="YlOrRd",
-                               interpolation="nearest")
-                plt.colorbar(im, ax=ax, label="Attention Weight")
-                ax.set_xlabel("Encoder Timestep (0 = oldest, right = most recent)")
-                ax.set_ylabel("(averaged across all samples)")
-                title = "TFT Temporal Attention Weights (mean)"
-                if ticker:
-                    title += f" — {ticker}"
-                ax.set_title(title)
-                plt.tight_layout()
-                if save_path:
-                    fig.savefig(save_path, dpi=150, bbox_inches="tight")
-                return fig
-        except Exception as e:
-            raise RuntimeError(f"attention_heatmap fallback also failed: {e}")
-
-    # Full per-sample attention path
-    attn = attn.detach().cpu()
-
-    # Shape handling: PF versions differ
-    # Could be (N, n_heads, pred_len, encoder_len) or (N, encoder_len)
-    if attn.dim() == 4:
-        attn_avg = attn.mean(dim=(1, 2))[:n_samples]   # (N, encoder_len)
-    elif attn.dim() == 3:
-        attn_avg = attn.mean(dim=1)[:n_samples]         # (N, encoder_len)
-    elif attn.dim() == 2:
-        attn_avg = attn[:n_samples]                     # (N, encoder_len)
-    else:
-        raise ValueError(f"Unexpected attention shape: {attn.shape}")
+    # Average over pred_len and n_heads → (N, encoder_len)
+    attn_avg = attn.mean(dim=(1, 2))[:n_samples]   # (n_samples, encoder_len)
 
     fig, ax = plt.subplots(figsize=(14, max(4, n_samples // 4)))
     im = ax.imshow(attn_avg.numpy(), aspect="auto", cmap="YlOrRd",
@@ -244,17 +235,20 @@ def shap_waterfall(
     val_loader,
     feature_names: list,
     sample_idx: int = 0,
-    n_background: int = 100,
+    n_background: int = 32,
     save_path: str = None,
 ) -> plt.Figure:
     """
-    Computes GradientExplainer SHAP values for a single prediction and
-    plots them as a waterfall chart.
+    Computes GradientExplainer SHAP values for a single prediction.
+
+    n_background should be ≤ val_loader batch_size (default 32 is safe).
+    ref_x is trimmed to n_background to prevent tensor size mismatch in
+    TFT's forward (encoder_cont + decoder_cont cat requires equal batch sizes).
     """
     device = next(model.parameters()).device
     model.eval()
 
-    # Collect background samples
+    # Collect background samples from train loader
     bg_inputs = []
     count = 0
     for batch in train_loader:
@@ -266,7 +260,7 @@ def shap_waterfall(
             break
     background = torch.cat(bg_inputs, dim=0)[:n_background]
 
-    # Get the specific val sample to explain
+    # Get val encoder tensors for the target sample
     val_batches = []
     for batch in val_loader:
         x, _ = batch
@@ -274,35 +268,14 @@ def shap_waterfall(
     val_enc = torch.cat(val_batches, dim=0)
     sample  = val_enc[sample_idx : sample_idx + 1]
 
-    # Grab ref_x trimmed to n_background to avoid batch size mismatch
-    # in TFT's forward (encoder_cont + decoder_cont cat requires matching sizes)
+    # Grab ref_x from val loader, trimmed to n_background
+    # Using a temp var (_x) to avoid self-reference in the dict comprehension
     for batch in val_loader:
         _x, _ = batch
-        ref_x = {k: v[:n_background].to(device) if isinstance(v, torch.Tensor) else v
-                 for k, v in _x.items()}
-        break
-
-    wrapper   = EncoderWrapper(model, ref_x)
-    explainer = shap.GradientExplainer(wrapper, background)
-    shap_vals = explainer.shap_values(sample)
-
-    # Wrapper: accepts encoder_cont tensor, returns median quantile prediction
-    class EncoderWrapper(torch.nn.Module):
-        def __init__(self, tft_model, ref_batch_x):
-            super().__init__()
-            self.tft   = tft_model
-            self.ref_x = ref_batch_x
-
-        def forward(self, encoder_cont):
-            import copy
-            batch_x = copy.deepcopy(self.ref_x)
-            batch_x["encoder_cont"] = encoder_cont
-            out = self.tft(batch_x)
-            return out["prediction"][:, :, 3]  # median quantile
-
-    for batch in val_loader:
-        ref_x, _ = batch
-        ref_x = {k: v.to(device) for k, v in ref_x.items()}
+        ref_x = {
+            k: v[:n_background].to(device) if isinstance(v, torch.Tensor) else v
+            for k, v in _x.items()
+        }
         break
 
     wrapper   = EncoderWrapper(model, ref_x)
@@ -313,7 +286,7 @@ def shap_waterfall(
         shap_vals = shap_vals[0]
 
     # Average |SHAP| over sequence length → (n_features,)
-    shap_mean  = np.abs(shap_vals[0]).mean(axis=0)
+    shap_mean = np.abs(shap_vals[0]).mean(axis=0)
     shap_series = (
         pd.Series(shap_mean, index=feature_names[:len(shap_mean)])
         .sort_values(ascending=False)
@@ -341,8 +314,8 @@ def shap_waterfall(
 # ---------------------------------------------------------------------------
 
 def explain_prediction(
-    df: pd.DataFrame,
-    train_dataset: TimeSeriesDataSet,
+    df,
+    train_dataset,
     ticker: str,
     checkpoint_path: str = None,
     save_dir: str = None,
@@ -376,7 +349,7 @@ def explain_prediction(
     shap_save = os.path.join(save_dir, f"{ticker}_shap.png") if save_dir else None
     fig_shap  = shap_waterfall(
         model, train_loader, val_loader, enc_names,
-        sample_idx=0, n_background=50, save_path=shap_save,
+        sample_idx=0, n_background=32, save_path=shap_save,
     )
 
     print(f"Done. Figures ready for {ticker}.")
