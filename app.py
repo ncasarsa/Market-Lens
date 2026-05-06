@@ -199,8 +199,10 @@ def load_tft():
     df = load_data()
     train_ds, val_ds = build_timeseries_dataset(df, cutoff=VAL_START)
 
-    model = MarketTFT.load_from_checkpoint(TFT_CKPT)
+    # Force CPU — Streamlit runs inference outside the GPU training context
+    model = MarketTFT.load_from_checkpoint(TFT_CKPT, map_location="cpu")
     model.eval()
+    model = model.cpu()
 
     val_loader = val_ds.to_dataloader(
         train=False, batch_size=128, num_workers=0
@@ -239,7 +241,7 @@ def get_predictions():
     with torch.no_grad():
         predictions = model.predict(val_loader, mode="raw", return_x=True)
 
-    pred_all    = predictions.output.prediction.squeeze(1).cpu()  # (N, 7)
+    pred_all    = predictions.output.prediction.squeeze(1).cpu()
     pred_median = pred_all[:, 3]
     actuals     = torch.cat([y[0] for x, y in val_loader]).squeeze(-1).cpu()
 
