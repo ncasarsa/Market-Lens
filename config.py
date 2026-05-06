@@ -98,9 +98,9 @@ OHLCV_COLS = ["open", "high", "low", "close", "volume"]
 # so including it causes direct data leakage into the encoder.
 TIME_VARYING_KNOWN_REALS     = ["days_to_fomc", "vix_normalized", "vix_change"]          # e.g. FOMC dates -- added later
 TIME_VARYING_UNKNOWN_REALS   = OHLCV_COLS + INDICATOR_COLS +  [
-    "sentiment_score",
-    "sentiment_volume",
-    "sentiment_rolling_3d",
+    # "sentiment_score",
+    # "sentiment_volume",
+    # "sentiment_rolling_3d",
     "return_lag_1",
     "return_lag_5",
     "return_lag_10",
