@@ -62,7 +62,7 @@ TRAIN_START = "2018-01-01"
 TRAIN_END   = "2024-12-31"
 
 # Train / val / test split (by date, not random -- avoids lookahead)
-VAL_START   = "2023-01-01"   # last ~2 years = val + test
+VAL_START   = "2022-01-01"   # last ~2 years = val + test
 TEST_START  = "2024-01-01"   # last 1 year = test
 
 
@@ -117,11 +117,11 @@ TIME_COL                     = "time_idx"  # PF time identifier
 # ---------------------------------------------------------------------------
 
 TFT = dict(
-    max_encoder_length      = 120,    # lookback window: 60 trading days (~3 months)
+    max_encoder_length      = 60,    # lookback window: 60 trading days (~3 months)
     max_prediction_length   = 1,     # predict 1 day ahead
     hidden_size             = 64,
     lstm_layers             = 2,
-    dropout                 = 0.1,
+    dropout                 = 0.2,
     attention_head_size     = 2,
     learning_rate           = 1e-3,
     gradient_clip_val       = 1.0,
