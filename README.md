@@ -45,6 +45,6 @@ Market-Lens/
 ├── logs/                    ✅ auto-created
 ├── notebooks/
 │   └── MarketLens_Training.ipynb  ✅ done
-├── requirements.txt         ❌ not started
+├── requirements.txt          ✅ done
 ├── .gitignore               ✅ done
 └── README.md                ✅ done
